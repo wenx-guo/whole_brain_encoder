@@ -14,6 +14,7 @@ from torchvision import transforms
 from sklearn.decomposition import IncrementalPCA, PCA
 from sklearn.linear_model import LinearRegression
 from scipy.stats import pearsonr as corr
+import torch.nn.functional as F
 
 
 class nsd_dataset(Dataset):
@@ -47,6 +48,7 @@ class nsd_dataset(Dataset):
 
         self.subj = args.subj
         self.transform = transform
+        self.backbone_arch = args.backbone_arch
 
         neural_data_path = Path(
             "/engram/nklab/datasets/natural_scene_dataset/model_training_datasets/neural_data"
@@ -76,7 +78,7 @@ class nsd_dataset(Dataset):
         parcel_path = Path(
             "/engram/nklab/algonauts/ethan/parcelling/results/plot_data_driven_parcellations"
         )
-        parcels = {
+        self.parcels = {
             "lh_betas": torch.from_numpy(
                 np.load(parcel_path / "lh_1000_kmeans_5init_3000iter_labels_s01.npy")
             ),
@@ -87,18 +89,20 @@ class nsd_dataset(Dataset):
         self.max_parcel_size = max(
             torch.max(
                 torch.unique(
-                    parcels[hemi], dim=0, return_inverse=True, return_counts=True
+                    self.parcels[hemi], dim=0, return_inverse=True, return_counts=True
                 )[2]
             )
-            for hemi in parcels.keys()
+            for hemi in self.parcels.keys()
         )
-        for hemi in parcels.keys():
-            parcels[hemi] = torch.from_numpy(parcels[hemi][:, None])
-            parcels[hemi] = torch.tensor(
-                [[0 if x[0] < 500 else 1, x[0]] for x in parcels[hemi]]
+        for hemi in self.parcels.keys():
+            self.parcels[hemi] = self.parcels[hemi][:, None]
+            self.parcels[hemi] = torch.tensor(
+                [[0 if x[0] < 500 else 1, x[0]] for x in self.parcels[hemi]]
             )
 
-            parcels[hemi] = self.reformat_parcels(parcels[hemi], parcels[hemi])
+            self.parcels[hemi] = self.reformat_parcels(
+                self.parcels[hemi], self.parcels[hemi]
+            )
 
     def transform_img(self, img):
         img = Image.fromarray(img)
@@ -120,6 +124,21 @@ class nsd_dataset(Dataset):
                 paded[:, : img.shape[1], : img.shape[2]] = img
                 img = paded
 
+        return img
+
+    def parcellate_fmri(self, fmri_data, labels):
+        if any(isinstance(element, torch.Tensor) for element in labels):
+            fmri = []
+
+            for parcel in labels:
+                parcel_data = fmri_data[parcel]
+                pad_size = self.max_parcel_size - parcel_data.size(0)
+                fmri.append(F.pad(parcel_data, (0, pad_size), mode="constant", value=0))
+
+            return torch.stack(fmri)
+
+        return [self.parcellate_fmri(fmri_data, parcel) for parcel in labels]
+
     def __getitem__(self, idx):
         idx = self.split_idxs[idx]
 
@@ -127,7 +146,12 @@ class nsd_dataset(Dataset):
         img = self.imgs["imgBrick"][img_ind]
         img = self.transform_img(img)
 
-        fmri_data = 0
+        fmri_data = {
+            hemi: self.parcellate_fmri(
+                torch.from_numpy(self.betas[hemi][idx]), self.parcels[hemi]
+            )
+            for hemi in self.betas.keys()
+        }
         return img, fmri_data
 
     def __len__(self):
