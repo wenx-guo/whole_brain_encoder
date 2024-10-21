@@ -104,10 +104,7 @@ class nsd_dataset(Dataset):
                 self.parcels[hemi], self.parcels[hemi]
             )
 
-        self.num_parcels = {
-            hemi: len(self.parcels[hemi][0]) for hemi in self.parcels
-        }
-
+        self.num_parcels = {hemi: len(self.parcels[hemi][0]) for hemi in self.parcels}
 
     def transform_img(self, img):
         img = Image.fromarray(img)
@@ -143,6 +140,15 @@ class nsd_dataset(Dataset):
             return torch.stack(fmri)
 
         return [self.parcellate_fmri(fmri_data, parcel) for parcel in labels]
+
+    def get_parcel_mask(self, labels):
+        mask = torch.zeros(len(labels), self.max_parcel_size, dtype=torch.bool)
+
+        for i, parcel in enumerate(labels):
+            pad_size = self.max_parcel_size - parcel.size(0)
+            mask[i][:-pad_size] = 1
+
+        return mask
 
     def __getitem__(self, idx):
         idx = self.split_idxs[idx]
