@@ -104,6 +104,11 @@ class nsd_dataset(Dataset):
                 self.parcels[hemi], self.parcels[hemi]
             )
 
+        self.num_parcels = {
+            hemi: len(self.parcels[hemi][0]) for hemi in self.parcels
+        }
+
+
     def transform_img(self, img):
         img = Image.fromarray(img)
         # Preprocess the image and send it to the chosen device ('cpu' or 'cuda')
