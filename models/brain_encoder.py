@@ -3,12 +3,12 @@ from torch import nn
 from collections import OrderedDict
 
 from utils.utils import NestedTensor, nested_tensor_from_tensor_list
-from backbone import build_backbone
-from transformer import build_transformer
+from models.backbone import build_backbone
+from models.transformer import build_transformer
 
 
 class brain_encoder(nn.Module):
-    def __init__(self, args, max_parcel_size, num_parcels):
+    def __init__(self, args, max_parcel_size, num_parcels, mask):
         super().__init__()
 
         self.lr_backbone = args.lr_backbone
@@ -49,10 +49,19 @@ class brain_encoder(nn.Module):
 
         self.max_parcel_size = max_parcel_size
         self.num_parcels = num_parcels
-        self.embed = nn.Parameter(
-            torch.randn(num_parcels, self.linear_feature_dim, max_parcel_size),
-        )
+
+        weights = torch.randn(num_parcels, self.linear_feature_dim, max_parcel_size)
+        weights[~mask.unsqueeze(1).expand(-1, self.linear_feature_dim, -1)] = 0
+        self.embed = torch.nn.Parameter(weights)
+
         self.embed_bias = nn.Parameter(torch.randn(num_parcels, max_parcel_size))
+        self.embed_bias = torch.nn.Parameter(
+            torch.where(
+                mask,
+                self.embed_bias,
+                torch.tensor(0.0, device=self.embed_bias.device),
+            )
+        )
 
     def forward(self, samples: NestedTensor):
         if isinstance(samples, (list, torch.Tensor)):
@@ -79,54 +88,78 @@ class brain_encoder(nn.Module):
         # print(mask)
         # print("pos_embed.shape:", pos_embed.shape)
 
-        if self.encoder_arch == "transformer":
-            hs = self.transformer(
-                input_proj_src,
-                mask,
-                self.query_embed.weight,
-                pos_embed,
-                self.return_interm,
-            )
-            output_tokens = hs[-1]  # TODO: 250 x 768 output tokens
+        hs = self.transformer(
+            input_proj_src,
+            mask,
+            self.query_embed.weight,
+            pos_embed,
+            self.return_interm,
+        )
+        output_tokens = hs[-1]  # TODO: 250 x 768 output tokens
 
-            if self.readout_res == "voxels":
-                lh_f_pred = self.lh_embed(output_tokens[:, 0 : self.lh_vs, :])
-                rh_f_pred = self.rh_embed(output_tokens[:, self.lh_vs :, :])
+        # output tokens: [batch_size, num_parcels, hidden_dim] like (bs, 500, 768)
+        # weights: [num_parcels, hidden_dim, max_parcel_size] like (500, 768, 2600)
+        # input to bmm: [500, bs, 768] by [500, 768, 2600]
+        # print("output_tokens.shape:", output_tokens.permute(1, 0, 2).shape)
+        # print("self.embed.shape:", self.embed.shape)
+        pred = torch.bmm(
+            output_tokens.permute(1, 0, 2),
+            self.embed,
+        )
+        # shape = [num_parcels, batch_size, max_parcel_size] like (500, bs, 2600)
 
-                lh_f_pred = torch.diagonal(lh_f_pred, dim1=-2, dim2=-1)
-                rh_f_pred = torch.diagonal(rh_f_pred, dim1=-2, dim2=-1)
+        pred = pred.permute(1, 0, 2)
+        # shape = [batch_size, num_parcels, max_parcel_size] like (bs, 500, 2600)
+        pred = pred + self.embed_bias
 
-            elif self.readout_res == "hemis":
-                lh_f_pred = self.lh_embed(output_tokens[:, 0, :])
-                rh_f_pred = self.rh_embed(output_tokens[:, 1, :])
+        # if self.encoder_arch == "transformer":
+        #     hs = self.transformer(
+        #         input_proj_src,
+        #         mask,
+        #         self.query_embed.weight,
+        #         pos_embed,
+        #         self.return_interm,
+        #     )
+        #     output_tokens = hs[-1]  # TODO: 250 x 768 output tokens
 
-            elif self.readout_res == "parcels":
-                # output tokens: [batch_size, num_parcels, hidden_dim] like (bs, 500, 768)
-                # weights: [num_parcels, hidden_dim, max_parcel_size] like (500, 768, 2600)
-                # input to bmm: [500, bs, 768] by [500, 768, 2600]
-                # print("output_tokens.shape:", output_tokens.permute(1, 0, 2).shape)
-                # print("self.embed.shape:", self.embed.shape)
-                pred = torch.bmm(
-                    output_tokens.permute(1, 0, 2),
-                    self.embed,
-                )
-                # shape = [num_parcels, batch_size, max_parcel_size] like (500, bs, 2600)
+        #     if self.readout_res == "voxels":
+        #         lh_f_pred = self.lh_embed(output_tokens[:, 0 : self.lh_vs, :])
+        #         rh_f_pred = self.rh_embed(output_tokens[:, self.lh_vs :, :])
 
-                pred = pred.permute(1, 0, 2)
-                # shape = [batch_size, num_parcels, max_parcel_size] like (bs, 500, 2600)
-                pred = pred + self.embed_bias
+        #         lh_f_pred = torch.diagonal(lh_f_pred, dim1=-2, dim2=-1)
+        #         rh_f_pred = torch.diagonal(rh_f_pred, dim1=-2, dim2=-1)
 
-            else:
-                lh_f_pred = self.lh_embed(output_tokens[:, :8, :])
-                lh_f_pred = torch.movedim(lh_f_pred, 1, -1)
+        #     elif self.readout_res == "hemis":
+        #         lh_f_pred = self.lh_embed(output_tokens[:, 0, :])
+        #         rh_f_pred = self.rh_embed(output_tokens[:, 1, :])
 
-                rh_f_pred = self.rh_embed(output_tokens[:, 8:, :])
-                rh_f_pred = torch.movedim(rh_f_pred, 1, -1)
+        #     elif self.readout_res == "parcels":
+        #         # output tokens: [batch_size, num_parcels, hidden_dim] like (bs, 500, 768)
+        #         # weights: [num_parcels, hidden_dim, max_parcel_size] like (500, 768, 2600)
+        #         # input to bmm: [500, bs, 768] by [500, 768, 2600]
+        #         # print("output_tokens.shape:", output_tokens.permute(1, 0, 2).shape)
+        #         # print("self.embed.shape:", self.embed.shape)
+        #         pred = torch.bmm(
+        #             output_tokens.permute(1, 0, 2),
+        #             self.embed,
+        #         )
+        #         # shape = [num_parcels, batch_size, max_parcel_size] like (500, bs, 2600)
 
-        elif self.encoder_arch == "linear":
-            output_tokens = input_proj_src.squeeze()
-            lh_f_pred = self.lh_embed(output_tokens)
-            rh_f_pred = self.rh_embed(output_tokens)
+        #         pred = pred.permute(1, 0, 2)
+        #         # shape = [batch_size, num_parcels, max_parcel_size] like (bs, 500, 2600)
+        #         pred = pred + self.embed_bias
+
+        #     else:
+        #         lh_f_pred = self.lh_embed(output_tokens[:, :8, :])
+        #         lh_f_pred = torch.movedim(lh_f_pred, 1, -1)
+
+        #         rh_f_pred = self.rh_embed(output_tokens[:, 8:, :])
+        #         rh_f_pred = torch.movedim(rh_f_pred, 1, -1)
+
+        # elif self.encoder_arch == "linear":
+        #     output_tokens = input_proj_src.squeeze()
+        #     lh_f_pred = self.lh_embed(output_tokens)
+        #     rh_f_pred = self.rh_embed(output_tokens)
 
         out = {
             # "lh_f_pred": lh_f_pred,

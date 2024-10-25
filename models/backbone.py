@@ -2,10 +2,10 @@ from torch import nn
 from typing import List
 
 from utils.utils import NestedTensor
-from position_encoding import build_position_encoding
+from models.position_encoding import build_position_encoding
 
-from resnet import resnet_model
-from dino import dino_model, dino_model_with_hooks
+from models.resnet import resnet_model
+from models.dino import dino_model, dino_model_with_hooks
 
 
 class Joiner(nn.Sequential):

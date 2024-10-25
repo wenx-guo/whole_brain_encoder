@@ -3,16 +3,11 @@ import numpy as np
 from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
-import matplotlib
 from matplotlib import pyplot as plt
-from nilearn import datasets
 import h5py
-from nilearn import plotting
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from sklearn.decomposition import IncrementalPCA, PCA
-from sklearn.linear_model import LinearRegression
 from scipy.stats import pearsonr as corr
 import torch.nn.functional as F
 
@@ -46,7 +41,7 @@ class nsd_dataset(Dataset):
     def __init__(self, args, split="train", parcel_paths=None, transform=None):
         super(nsd_dataset, self).__init__()
 
-        self.subj = args.subj
+        self.subj = int(args.subj)
         self.transform = transform
         self.backbone_arch = args.backbone_arch
 
