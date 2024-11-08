@@ -51,6 +51,7 @@ class nsd_dataset(Dataset):
         metadata = np.load(
             neural_data_path / f"metadata_sub-{self.subj:02}.npy", allow_pickle=True
         ).item()
+        self.metadata = metadata
         self.img_order = metadata["img_presentation_order"]
 
         assert split in [
@@ -63,6 +64,9 @@ class nsd_dataset(Dataset):
             np.isin(metadata["img_presentation_order"], split_imgs)
         )[0]
 
+        # if split == "train":
+        #     self.split_idxs = self.split_idxs[: int(len(self.split_idxs) * 0.1)]
+
         self.betas = h5py.File(neural_data_path / f"betas_sub-{self.subj:02}.h5", "r")
 
         imgs_dir = Path(
@@ -71,15 +75,15 @@ class nsd_dataset(Dataset):
         self.imgs = h5py.File(imgs_dir / "nsd_stimuli.hdf5", "r")
 
         parcel_path = Path(
-            "/engram/nklab/algonauts/ethan/parcelling/results/plot_data_driven_parcellations"
+            "/engram/nklab/algonauts/ethan/parcelling/results/1000_kmeans_5init_3000iter_train"
         )
+        self.labels = {
+            "lh_betas": torch.from_numpy(np.load(parcel_path / "lh_labels_s01.npy")),
+            "rh_betas": torch.from_numpy(np.load(parcel_path / "rh_labels_s01.npy")),
+        }
         self.parcels = {
-            "lh_betas": torch.from_numpy(
-                np.load(parcel_path / "lh_1000_kmeans_5init_3000iter_labels_s01.npy")
-            ),
-            "rh_betas": torch.from_numpy(
-                np.load(parcel_path / "rh_1000_kmeans_5init_3000iter_labels_s01.npy")
-            ),
+            "lh_betas": torch.from_numpy(np.load(parcel_path / "lh_labels_s01.npy")),
+            "rh_betas": torch.from_numpy(np.load(parcel_path / "rh_labels_s01.npy")),
         }
         self.max_parcel_size = max(
             torch.max(
@@ -90,11 +94,6 @@ class nsd_dataset(Dataset):
             for hemi in self.parcels.keys()
         )
         for hemi in self.parcels.keys():
-            self.parcels[hemi] = self.parcels[hemi][:, None]
-            self.parcels[hemi] = torch.tensor(
-                [[0 if x[0] < 500 else 1, x[0]] for x in self.parcels[hemi]]
-            )
-
             self.parcels[hemi] = self.reformat_parcels(
                 self.parcels[hemi], self.parcels[hemi]
             )
@@ -158,11 +157,260 @@ class nsd_dataset(Dataset):
             )
             for hemi in self.betas.keys()
         }
+        fmri_data["lh_raw"] = torch.from_numpy(self.betas["lh_betas"][idx])
+        fmri_data["lh_v1v"] = fmri_data["lh_raw"][self.metadata["lh_rois"]["V1v"]]
         return img, fmri_data
 
     def __len__(self):
         return len(self.split_idxs)
 
+
+class nsd_dataset_avg(Dataset):
+    def reformat_parcels(self, original_parcels, parcels, position=[]):
+        """
+        args:
+        parcels: [(level1, level2, ...), (level1, level2, ...), ...]
+
+        returns: [level1: [idx1, idx2, ...], level2: [idx1, idx2, ...], ...]
+        """
+        if len(parcels[0]) == 1:
+            t = [
+                (original_parcels == torch.tensor(position + [p]))
+                .all(dim=1)
+                .nonzero(as_tuple=True)[0]
+                for p in torch.unique(parcels)
+            ]
+            return t
+
+        return [
+            self.reformat_parcels(
+                original_parcels,
+                parcels[torch.where(parcels[:, 0] == p)[0]][:, 1:],
+                [p.item()],
+            )
+            for p in torch.unique(parcels[:, 0])
+        ]
+
+    def __init__(self, args, split="train", parcel_paths=None, transform=None):
+        super(nsd_dataset_avg, self).__init__()
+
+        self.subj = int(args.subj)
+        self.transform = transform
+        self.backbone_arch = args.backbone_arch
+
+        neural_data_path = Path(
+            "/engram/nklab/datasets/natural_scene_dataset/model_training_datasets/neural_data"
+        )
+        metadata = np.load(
+            neural_data_path / f"metadata_sub-{self.subj:02}.npy", allow_pickle=True
+        ).item()
+        self.metadata = metadata
+        self.img_order = metadata["img_presentation_order"]
+
+        assert split in [
+            "train",
+            "test",
+            "val",
+        ], "split must be either train, test or val"
+        self.split_imgs = metadata[f"{split}_img_num"]
+
+        self.img_to_runs = np.array(
+            [
+                np.where(metadata["img_presentation_order"] == img_ind)[0]
+                for img_ind in self.split_imgs
+            ]
+        )
+
+        self.betas = h5py.File(neural_data_path / f"betas_sub-{self.subj:02}.h5", "r")
+
+        imgs_dir = Path(
+            "/engram/nklab/datasets/natural_scene_dataset/nsddata_stimuli/stimuli/nsd"
+        )
+        self.imgs = h5py.File(imgs_dir / "nsd_stimuli.hdf5", "r")
+
+        parcel_path = Path(
+            "/engram/nklab/algonauts/ethan/parcelling/results/1000_kmeans_5init_3000iter_train"
+        )
+        self.labels = {
+            "lh_betas": torch.from_numpy(np.load(parcel_path / "lh_labels_s01.npy")),
+            "rh_betas": torch.from_numpy(np.load(parcel_path / "rh_labels_s01.npy")),
+        }
+        self.parcels = {
+            "lh_betas": torch.from_numpy(np.load(parcel_path / "lh_labels_s01.npy")),
+            "rh_betas": torch.from_numpy(np.load(parcel_path / "rh_labels_s01.npy")),
+        }
+        self.max_parcel_size = max(
+            torch.max(
+                torch.unique(
+                    self.parcels[hemi], dim=0, return_inverse=True, return_counts=True
+                )[2]
+            )
+            for hemi in self.parcels.keys()
+        )
+        for hemi in self.parcels.keys():
+            self.parcels[hemi] = self.reformat_parcels(
+                self.parcels[hemi], self.parcels[hemi]
+            )
+
+        self.num_parcels = {hemi: len(self.parcels[hemi][0]) for hemi in self.parcels}
+
+    def transform_img(self, img):
+        img = Image.fromarray(img)
+        # Preprocess the image and send it to the chosen device ('cpu' or 'cuda')
+
+        if self.transform:
+            img = self.transform(img)
+
+        if self.backbone_arch:
+            if "dinov2" in self.backbone_arch:
+                patch_size = 14
+
+                size_im = (
+                    img.shape[0],
+                    int(np.ceil(img.shape[1] / patch_size) * patch_size),
+                    int(np.ceil(img.shape[2] / patch_size) * patch_size),
+                )
+                paded = torch.zeros(size_im)
+                paded[:, : img.shape[1], : img.shape[2]] = img
+                img = paded
+
+        return img
+
+    def parcellate_fmri(self, fmri_data, labels):
+        if any(isinstance(element, torch.Tensor) for element in labels):
+            fmri = []
+
+            for parcel in labels:
+                parcel_data = fmri_data[parcel]
+                pad_size = self.max_parcel_size - parcel_data.size(0)
+                fmri.append(F.pad(parcel_data, (0, pad_size), mode="constant", value=0))
+
+            return torch.stack(fmri)
+
+        return [self.parcellate_fmri(fmri_data, parcel) for parcel in labels]
+
+    def get_parcel_mask(self, labels):
+        mask = torch.zeros(len(labels), self.max_parcel_size, dtype=torch.bool)
+
+        for i, parcel in enumerate(labels):
+            pad_size = self.max_parcel_size - parcel.size(0)
+            mask[i][:-pad_size] = 1
+
+        return mask
+
+    def __getitem__(self, i):
+        # idx = self.split_idxs[i]
+
+        img_ind = self.split_imgs[i]  # image index in nsd
+        img = self.imgs["imgBrick"][img_ind]
+        img = self.transform_img(img)
+
+        data_idxs = self.img_to_runs[i]
+        lh_data = torch.from_numpy(self.betas["lh_betas"][data_idxs])
+        lh_data = torch.mean(lh_data, axis=0)
+
+        fmri_data = {}
+
+        for hemi in self.betas.keys():
+            data = torch.from_numpy(self.betas[hemi][data_idxs])
+
+            fmri_data[f"{hemi}_raw"] = data
+            fmri_data[f"{hemi}_v1v"] = fmri_data[f"{hemi}_raw"][
+                :, self.metadata["lh_rois"]["V1v"]
+            ]
+
+            data = torch.mean(data, axis=0)
+
+            fmri_data[hemi] = self.parcellate_fmri(data, self.parcels[hemi])
+
+        return img, fmri_data
+
+    def __len__(self):
+        return len(self.split_imgs)
+
+class nsd_dataset_avg_lightweight(Dataset):
+
+    def __init__(self, args, split="train", parcel_paths=None, transform=None):
+        super(nsd_dataset_avg_lightweight, self).__init__()
+
+        self.subj = int(args.subj)
+        self.transform = transform
+        self.backbone_arch = args.backbone_arch
+
+        neural_data_path = Path(
+            "/engram/nklab/datasets/natural_scene_dataset/model_training_datasets/neural_data"
+        )
+        metadata = np.load(
+            neural_data_path / f"metadata_sub-{self.subj:02}.npy", allow_pickle=True
+        ).item()
+        self.metadata = metadata
+        self.img_order = metadata["img_presentation_order"]
+
+        assert split in [
+            "train",
+            "test",
+            "val",
+        ], "split must be either train, test or val"
+        self.split_imgs = metadata[f"{split}_img_num"]
+
+        self.img_to_runs = np.array(
+            [
+                np.where(metadata["img_presentation_order"] == img_ind)[0]
+                for img_ind in self.split_imgs
+            ]
+        )
+
+        self.betas = h5py.File(neural_data_path / f"betas_sub-{self.subj:02}.h5", "r")
+
+        imgs_dir = Path(
+            "/engram/nklab/datasets/natural_scene_dataset/nsddata_stimuli/stimuli/nsd"
+        )
+        self.imgs = h5py.File(imgs_dir / "nsd_stimuli.hdf5", "r")
+
+
+    def transform_img(self, img):
+        img = Image.fromarray(img)
+        # Preprocess the image and send it to the chosen device ('cpu' or 'cuda')
+
+        if self.transform:
+            img = self.transform(img)
+
+        if self.backbone_arch:
+            if "dinov2" in self.backbone_arch:
+                patch_size = 14
+
+                size_im = (
+                    img.shape[0],
+                    int(np.ceil(img.shape[1] / patch_size) * patch_size),
+                    int(np.ceil(img.shape[2] / patch_size) * patch_size),
+                )
+                paded = torch.zeros(size_im)
+                paded[:, : img.shape[1], : img.shape[2]] = img
+                img = paded
+
+        return img
+
+    def __getitem__(self, i):
+
+        img_ind = self.split_imgs[i]  # image index in nsd
+        img = self.imgs["imgBrick"][img_ind]
+        img = self.transform_img(img)
+
+        data_idxs = self.img_to_runs[i]
+        lh_data = torch.from_numpy(self.betas["lh_betas"][data_idxs])
+        lh_data = torch.mean(lh_data, axis=0)
+
+        fmri_data = {}
+
+        for hemi in self.betas.keys():
+            data = torch.from_numpy(self.betas[hemi][data_idxs])
+
+            fmri_data[f"{hemi}_raw"] = data
+
+        return img, fmri_data
+
+    def __len__(self):
+        return len(self.split_imgs)
 
 class algonauts_dataset(Dataset):
     def __init__(self, args, is_train, imgs_paths, idxs, transform=None):

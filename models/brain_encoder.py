@@ -75,7 +75,7 @@ class brain_encoder(nn.Module):
             features, pos = self.backbone_model(samples)
 
         input_proj_src, mask = features[-1].decompose()
-        assert mask is not None
+        # assert mask is not None
         pos_embed = pos[-1]
         _, _, h, w = pos_embed.shape
 

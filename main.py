@@ -9,8 +9,9 @@ from torchvision import transforms
 
 from scipy.stats import pearsonr as corr
 
-from models.brain_encoder import brain_encoder
-from engine import train_one_epoch, evaluate
+from models.brain_encoder_exp import brain_encoder
+from engine import evaluate_exp as evaluate
+from engine import train_one_epoch_exp as train_one_epoch
 
 import utils.utils as utils
 from pathlib import Path
@@ -22,12 +23,9 @@ from datasets.nsd import nsd_dataset
 # np.random.seed(0)
 # torch.manual_seed(0)
 
-try:
-    import wandb
+import wandb
 
-    os.environ["WANDB_MODE"] = "offline"
-except ImportError as e:
-    pass
+os.environ["WANDB_MODE"] = "offline"
 
 
 def get_args_parser():
@@ -36,12 +34,12 @@ def get_args_parser():
     parser.add_argument("--resume", default=None, help="resume from checkpoint")
     parser.add_argument(
         "--output_path",
-        default="./results/",
+        default="/engram/nklab/algonauts/ethan/transformer_brain_encoder/checkpoints",
         type=str,
         help="if not none, then store the model resuls",
     )
 
-    parser.add_argument("--save_model", default=False, type=int)
+    parser.add_argument("--save_model", default=True, type=int)
 
     ## NSD params
     parser.add_argument("--subj", default=1, type=int)
@@ -180,7 +178,7 @@ def get_args_parser():
         "--num_workers", default=4, type=int, help="number of data loading num_workers"
     )
     parser.add_argument(
-        "--epochs", default=10, type=int, help="number of total epochs to run"
+        "--epochs", default=50, type=int, help="number of total epochs to run"
     )
     parser.add_argument("--batch_size", default=16, type=int, help="mini-batch size")
     parser.add_argument(
@@ -197,7 +195,7 @@ def get_args_parser():
 
     parser.add_argument("--evaluate", action="store_true", help="just evaluate")
 
-    parser.add_argument("--wandb_p", default=None, type=str)
+    parser.add_argument("--wandb_p", default="brain_encoder", type=str)
     parser.add_argument("--wandb_r", default=None, type=str)
 
     # dataset parameters
@@ -249,13 +247,14 @@ def main(rank, world_size, args):
         args.parent_submission_dir, "subj" + args.subj
     )
 
-    # if args.output_path:
-    #     args.save_dir = (
-    #         args.output_path
-    #         + f"nsd_test/{args.backbone_arch}_{args.encoder_arch}/subj_{args.subj}/{args.readout_res}/enc_{args.enc_output_layer}/run_{args.run}/"
-    #     )
-    #     if (not os.path.exists(args.save_dir)) and (args.gpu == 0):
-    #         os.makedirs(args.save_dir)
+    if args.output_path:
+        args.output_path = Path(args.output_path)
+        args.save_dir = Path(
+            args.output_path
+            / f"nsd_test/{args.backbone_arch}_{args.encoder_arch}_{args.lr}_seenotes/subj_{args.subj}"
+        )
+        if (not os.path.exists(args.save_dir)) and (args.gpu == 0):
+            os.makedirs(args.save_dir, exist_ok=True)
 
     # Create the submission directory if not existing
     # if not os.path.isdir(args.subject_submission_dir):
@@ -316,6 +315,29 @@ def main(rank, world_size, args):
 
     # train_loader, val_loader = fetch_data_loaders(args)
 
+    # only for one processs
+    if args.gpu == 0:
+        if args.wandb_p:
+            os.environ["WANDB_MODE"] = "online"
+
+            if args.wandb_r:
+                wandb_r = args.wandb_r
+            else:
+                wandb_r = args.encoder_arch
+
+            os.environ["WANDB__SERVICE_WAIT"] = "300"
+            wandb.init(
+                project=args.wandb_p,
+                name="v1v " + wandb_r,
+                config={
+                    "learning_rate": args.lr,
+                    "architecture": f"{args.encoder_arch}",
+                    "epochs": args.epochs,
+                    "subject": args.subj,
+                    "notes": "v1v",
+                },
+            )
+
     transform = transforms.Compose(
         [
             transforms.ToTensor(),  # convert the images to a PyTorch tensor
@@ -343,9 +365,15 @@ def main(rank, world_size, args):
     )
 
     mask = train_dataset.get_parcel_mask(train_dataset.parcels["lh_betas"][0])
+    # model = brain_encoder(
+    #     args, train_dataset.max_parcel_size, train_dataset.num_parcels["lh_betas"], mask
+    # )
     model = brain_encoder(
-        args, train_dataset.max_parcel_size, train_dataset.num_parcels["lh_betas"], mask
-    )
+        args,
+        train_dataset.metadata["lh_rois"]["V1v"].sum(),
+        train_dataset.num_parcels["lh_betas"],
+        mask,
+    )  # TODO: remove this
     model = model.cuda()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of model parameters: {num_parameters}")
@@ -357,105 +385,55 @@ def main(rank, world_size, args):
     #         model, device_ids=[args.gpu], find_unused_parameters=True
     #     )
 
-    criterion = torch.nn.MSELoss()
+    criterion = torch.nn.MSELoss(reduction="sum")
 
-    # if args.resume:
-    #     checkpoint = torch.load(args.resume, map_location="cpu")
-    #     pretrained_dict = checkpoint["model"]
-    #     model.load_state_dict(pretrained_dict)
+    if args.resume:
+        checkpoint = torch.load(args.resume, map_location="cpu")
+        pretrained_dict = checkpoint["model"]
+        model.load_state_dict(pretrained_dict)
 
-    #     args.best_val_acc = vars(checkpoint["args"])[
-    #         "val_perf"
-    #     ]  # checkpoint['val_acc'] #or read it from the
+        args.best_val_acc = vars(checkpoint["args"])[
+            "val_perf"
+        ]  # checkpoint['val_acc'] #or read it from the
 
-    #     if (
-    #         not args.eval
-    #         and "optimizer" in checkpoint
-    #         and "lr_scheduler" in checkpoint
-    #         and "epoch" in checkpoint
-    #     ):
-    #         train_params = checkpoint["train_params"]
-    #         param_dicts = [
-    #             {
-    #                 "params": [
-    #                     p for n, p in model.named_parameters() if n in train_params
-    #                 ]
-    #             },
-    #         ]
+        if (
+            not args.eval
+            and "optimizer" in checkpoint
+            and "lr_scheduler" in checkpoint
+            and "epoch" in checkpoint
+        ):
+            train_params = checkpoint["train_params"]
+            param_dicts = [
+                {
+                    "params": [
+                        p for n, p in model.named_parameters() if n in train_params
+                    ]
+                },
+            ]
 
-    #         optimizer = torch.optim.AdamW(
-    #             param_dicts, lr=args.lr, weight_decay=args.weight_decay
-    #         )
-    #         optimizer.load_state_dict(checkpoint["optimizer"])
+            optimizer = torch.optim.AdamW(
+                param_dicts, lr=args.lr, weight_decay=args.weight_decay
+            )
+            optimizer.load_state_dict(checkpoint["optimizer"])
 
-    #         lr_scheduler = torch.optim.lr_scheduler.StepLR(
-    #             optimizer, args.lr_drop, gamma=0.5
-    #         )
-    #         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
-    #         args.start_epoch = checkpoint["epoch"] + 1
+            lr_scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer, args.lr_drop, gamma=0.5
+            )
+            lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
+            args.start_epoch = checkpoint["epoch"] + 1
 
-    # else:
-    #     param_dicts = [
-    #         {"params": [p for n, p in model.named_parameters() if p.requires_grad]},
-    #     ]  # n not in frozen_params and
-
-    #     train_params = [
-    #         n for n, p in model.named_parameters() if p.requires_grad
-    #     ]  # n not in frozen_params and
-
-    #     print("\ntrain_params", train_params)
-
-    #     optimizer = torch.optim.AdamW(
-    #         param_dicts, lr=args.lr, weight_decay=args.weight_decay
-    #     )
-    #     lr_scheduler = torch.optim.lr_scheduler.StepLR(
-    #         optimizer, args.lr_drop, gamma=0.5
-    #     )
-
-    #     args.start_epoch = 0
-
-    # only for one processs
-    # if args.gpu == 0:
-    #     if args.wandb_p:
-    #         os.environ["WANDB_MODE"] = "online"
-
-    #         if args.wandb_r:
-    #             wandb_r = args.wandb_r
-    #         else:
-    #             wandb_r = args.encoder_arch
-
-    #         os.environ["WANDB__SERVICE_WAIT"] = "300"
-    #         #        settings=wandb.Settings(_service_wait=300)
-    #         wandb.init(
-    #             # Set the project where this run will be logged
-    #             project=args.wandb_p,
-    #             # We pass a run name (otherwise it’ll be randomly assigned, like sunshine-lollypop-10)
-    #             name=wandb_r,
-    #             # Track hyperparameters and run metadata
-    #             config={
-    #                 "learning_rate": args.lr,
-    #                 "architecture": f"{args.encoder_arch}",
-    #                 "epochs": args.epochs,
-    #             },
-    #         )
-
-    #     with open(os.path.join(args.save_dir, "params.txt"), "w") as f:
-    #         pprint.pprint(args.__dict__, f, sort_dicts=False)
-
-    #     with open(os.path.join(args.save_dir, "val_results.txt"), "w") as f:
-    #         f.write(f"validation results: \n")
-
-    optimizer = torch.optim.AdamW(
-        model_ddp.parameters(), lr=args.lr, weight_decay=args.weight_decay
-    )
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop, gamma=0.5)
+    else:
+        optimizer = torch.optim.AdamW(
+            model_ddp.parameters(), lr=args.lr, weight_decay=args.weight_decay
+        )
+        lr_scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer, args.lr_drop, gamma=0.5
+        )
+        torch.set_float32_matmul_precision("high")
 
     print("Start training")
     # start_time = time.time()
-    args.save_dir = Path(
-        "/engram/nklab/algonauts/ethan/transformer_brain_encoder/checkpoints"
-    )
-    mask = mask = val_dataset.get_parcel_mask(val_dataset.parcels["lh_betas"][0])
+    mask = train_dataset.get_parcel_mask(train_dataset.parcels["lh_betas"][0])
 
     model_ddp = torch.compile(model_ddp)
 
@@ -468,23 +446,34 @@ def main(rank, world_size, args):
             optimizer,
             args.device,
             epoch,
+            mask.sum(),
+            train_dataset,
             args.clip_max_norm,
         )
         lr_scheduler.step()
 
-        # evaluate
-        ys, preds = evaluate(
+        # ys, preds = evaluate(
+        #     model_ddp,
+        #     criterion,
+        #     val_loader,
+        #     args,
+        #     train_dataset,
+        #     args.device,
+        # )
+        # TODO: remove this
+        val_perf = evaluate(
             model_ddp,
             criterion,
             val_loader,
             args,
-            mask,
+            train_dataset,
             args.device,
         )
-        p = torch.tensor(
-            [corr(ys[i].cpu(), preds[i].cpu()) for i in range(ys.shape[0])]
-        )
-        val_perf = p.mean(axis=0)[0].item()
+
+        # p = torch.tensor(
+        #     [corr(ys[i].detach().cpu(), preds[i].cpu()) for i in range(ys.shape[0])]
+        # )
+        # val_perf = p.mean(axis=0)[0].item()
 
         print("val_perf:", val_perf)
 
@@ -497,22 +486,25 @@ def main(rank, world_size, args):
                     with open(args.save_dir / "val_results.txt", "a") as f:
                         f.write(f"epoch {epoch}, val_perf: {val_perf} \n")
 
-                if args.save_model:
-                    checkpoint_paths = [args.save_dir / "/checkpoint.pth"]
-                    # print('checkpoint_path:',  checkpoint_paths)
-                    for checkpoint_path in checkpoint_paths:
-                        utils.save_on_master(
-                            {
-                                "model": model.state_dict(),
-                                "optimizer": optimizer.state_dict(),
-                                #                         'train_params' : train_params,
-                                "lr_scheduler": lr_scheduler.state_dict(),
-                                "epoch": epoch,
-                                "args": args,
-                                "val_perf": best_val_perf,
-                            },
-                            checkpoint_path,
-                        )
+                try:
+                    if args.save_model:
+                        checkpoint_paths = [args.save_dir / "checkpoint.pth"]
+                        # print('checkpoint_path:',  checkpoint_paths)
+                        for checkpoint_path in checkpoint_paths:
+                            utils.save_on_master(
+                                {
+                                    "model": model.state_dict(),
+                                    "optimizer": optimizer.state_dict(),
+                                    "lr_scheduler": lr_scheduler.state_dict(),
+                                    "epoch": epoch,
+                                    "args": args,
+                                    "val_perf": best_val_perf,
+                                },
+                                checkpoint_path,
+                            )
+                except Exception as e:
+                    print("Error saving model")
+                    print(e)
 
         # # Empty correlation array of shape: (LH vertices)
         # lh_correlation = np.zeros(lh_fmri_val_pred.shape[1])
@@ -572,8 +564,8 @@ def main(rank, world_size, args):
 
         # val_perf = (lh_mean_roi_correlation[-1] + rh_mean_roi_correlation[-1]) / 2
         # print("shape of rh_fmri_val_pred", rh_fmri_val_pred.shape)
-        # if (args.gpu == 0) and (args.wandb_p):
-        #     wandb.log({"val_perf": val_perf})
+        if (args.gpu == 0) and (args.wandb_p):
+            wandb.log({"val_perf": val_perf})
 
         #         np.save(args.save_dir + "lh_fmri_val_pred.npy", lh_fmri_val_pred)
         #         np.save(args.save_dir + "rh_fmri_val_pred.npy", rh_fmri_val_pred)
@@ -596,6 +588,8 @@ def main(rank, world_size, args):
     if args.distributed:
         destroy_process_group()
 
+    wandb.finish()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -608,6 +602,4 @@ if __name__ == "__main__":
     # TODO: fix the shuffling issue before enabling distributed training
     # if args.distributed:
     #     args.world_size = torch.cuda.device_count()
-    #     mp.spawn(main, args=(args.world_size, args), nprocs=args.world_size)
-    # else:
-    main(0, 1, args)
+    #     mp.spawn(main, args=(args.world_size, args), nprocs=args.worl
