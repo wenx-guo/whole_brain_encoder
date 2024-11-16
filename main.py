@@ -1,29 +1,27 @@
-import os, argparse, time, glob, pickle, subprocess, shlex, io, pprint
+import os
+import argparse
 
 from tqdm import tqdm
 
 import torch
 import torch.utils.model_zoo
-from torch.distributed import destroy_process_group
 from torchvision import transforms
 
 from scipy.stats import pearsonr as corr
 
-from models.brain_encoder_exp import brain_encoder
-from engine import evaluate_exp as evaluate
-from engine import train_one_epoch_exp as train_one_epoch
+from models.brain_encoder import brain_encoder
+from engine import evaluate as evaluate
+from engine import train_one_epoch as train_one_epoch
 
 import utils.utils as utils
 from pathlib import Path
 
-from PIL import Image
-
-from datasets.nsd import nsd_dataset
-
-# np.random.seed(0)
-# torch.manual_seed(0)
+from datasets.nsd import nsd_dataset as nsd_dataset
+from datasets.nsd import nsd_dataset_avg
 
 import wandb
+
+torch.manual_seed(0)
 
 os.environ["WANDB_MODE"] = "offline"
 
@@ -46,7 +44,17 @@ def get_args_parser():
     parser.add_argument("--run", default=1, type=int)
     parser.add_argument(
         "--data_dir",
-        default="../../../algonauts/algonauts_2023_challenge_data/",
+        default="/engram/nklab/datasets/natural_scene_dataset/model_training_datasets/neural_data",
+        type=str,
+    )
+    parser.add_argument(
+        "--imgs_dir",
+        default="/engram/nklab/datasets/natural_scene_dataset/nsddata_stimuli/stimuli/nsd",
+        type=str,
+    )
+    parser.add_argument(
+        "--parcel_dir",
+        default="/engram/nklab/algonauts/ethan/parcelling/results/200c_20percentile_ftalgo_5init_3000iter_train",
         type=str,
     )
     parser.add_argument(
@@ -127,6 +135,10 @@ def get_args_parser():
         help="Train segmentation head if the flag is provided",
     )
 
+    parser.add_argument(
+        "--start_epoch", default=0, type=int, metavar="N", help="start epoch"
+    )
+
     # * Transformer
     parser.add_argument(
         "--enc_layers",
@@ -178,7 +190,7 @@ def get_args_parser():
         "--num_workers", default=4, type=int, help="number of data loading num_workers"
     )
     parser.add_argument(
-        "--epochs", default=50, type=int, help="number of total epochs to run"
+        "--epochs", default=20, type=int, help="number of total epochs to run"
     )
     parser.add_argument("--batch_size", default=16, type=int, help="mini-batch size")
     parser.add_argument(
@@ -218,125 +230,63 @@ def get_args_parser():
         help="what should the image channels be (not what it is)?",
     )  # gray scale 1 / color 3
 
-    parser.add_argument(
-        "--distributed", default=False, help="whether to use distributed training"
-    )
-
     parser.add_argument("--lh_vs", default=None)
     parser.add_argument("--rh_vs", default=None)
+
+    parser.add_argument(
+        "--axis", default="anterior", choices=["anterior", "posterior"], type=str
+    )
+    parser.add_argument("--hemi", default="lh", choices=["lh", "rh"], type=str)
 
     return parser
 
 
-def main(rank, world_size, args):
-    if args.distributed:
-        args.rank = rank
-        args.world_size = world_size
-        utils.init_distributed_mode(args)
-    else:
-        args.gpu = 0
-
+def main(args):
     args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(args.device)
-
-    best_val_perf = 0
+    print("device:", args.device)
 
     args.subj = format(args.subj, "02")
-    args.data_dir = os.path.join(args.data_dir, "subj" + args.subj)
     args.subject_submission_dir = os.path.join(
         args.parent_submission_dir, "subj" + args.subj
     )
+
+    if args.axis == "posterior":
+        args.metaparcel_idx = 0
+    elif args.axis == "anterior":
+        args.metaparcel_idx = 1
 
     if args.output_path:
         args.output_path = Path(args.output_path)
         args.save_dir = Path(
             args.output_path
-            / f"nsd_test/{args.backbone_arch}_{args.encoder_arch}_{args.lr}_seenotes/subj_{args.subj}"
+            / f"nsd_test/{args.backbone_arch}_{args.encoder_arch}/subj_{args.subj}/{args.hemi}_{args.axis}"
         )
-        if (not os.path.exists(args.save_dir)) and (args.gpu == 0):
+        if not os.path.exists(args.save_dir):
             os.makedirs(args.save_dir, exist_ok=True)
+        print("saving into:", args.save_dir)
 
-    # Create the submission directory if not existing
-    # if not os.path.isdir(args.subject_submission_dir):
-    #     os.makedirs(args.subject_submission_dir)
+    if args.wandb_p:
+        os.environ["WANDB_MODE"] = "online"
 
-    # roi_name_maps, lh_challenge_rois, rh_challenge_rois = roi_maps(args.data_dir)
+        if args.wandb_r:
+            wandb_r = args.wandb_r
+        else:
+            wandb_r = args.encoder_arch
 
-    # if args.readout_res == "visuals":
-    #     args.rois_ind = 0
-    #     args.num_queries = 16  # 2*len(roi_name_maps[args.rois_ind])
+        os.environ["WANDB__SERVICE_WAIT"] = "300"
 
-    # elif args.readout_res == "bodies":
-    #     args.rois_ind = 1
-    #     args.num_queries = 16  # 10
-
-    # elif args.readout_res == "faces":
-    #     args.rois_ind = 2
-    #     args.num_queries = 16  # 12
-
-    # elif args.readout_res == "places":
-    #     args.rois_ind = 3
-    #     args.num_queries = 16  # 8
-
-    # elif args.readout_res == "words":
-    #     args.rois_ind = 4
-    #     args.num_queries = 16  # 12
-
-    # elif args.readout_res == "streams" or args.readout_res == "streams_inc":
-    #     args.rois_ind = 5
-    #     args.num_queries = 16
-
-    # elif args.readout_res == "hemis":
-    #     args.rois_ind = 5
-    #     args.num_queries = 2
-
-    # elif args.readout_res == "voxels":
-    #     args.rois_ind = 5
-
-    # args.roi_nums = len(roi_name_maps[args.rois_ind])
-
-    # lh_rois = torch.tensor(lh_challenge_rois[args.rois_ind]).to(args.device)  # -1
-    # rh_rois = torch.tensor(rh_challenge_rois[args.rois_ind]).to(args.device)  # -1
-
-    # lh_challenge_rois_s = []
-    # rh_challenge_rois_s = []
-    # for i in range(args.roi_nums):
-    #     lh_challenge_rois_s.append(torch.where(lh_rois == i, 1, 0))
-    #     rh_challenge_rois_s.append(torch.where(rh_rois == i, 1, 0))
-
-    # lh_challenge_rois_s = torch.vstack(lh_challenge_rois_s)
-    # rh_challenge_rois_s = torch.vstack(rh_challenge_rois_s)
-
-    # args.lh_vs = len(lh_challenge_rois_s[args.rois_ind])
-    # args.rh_vs = len(rh_challenge_rois_s[args.rois_ind])
-
-    # if args.readout_res == "voxels":
-    #     args.num_queries = args.lh_vs + args.rh_vs
-
-    # train_loader, val_loader = fetch_data_loaders(args)
-
-    # only for one processs
-    if args.gpu == 0:
-        if args.wandb_p:
-            os.environ["WANDB_MODE"] = "online"
-
-            if args.wandb_r:
-                wandb_r = args.wandb_r
-            else:
-                wandb_r = args.encoder_arch
-
-            os.environ["WANDB__SERVICE_WAIT"] = "300"
-            wandb.init(
-                project=args.wandb_p,
-                name="v1v " + wandb_r,
-                config={
-                    "learning_rate": args.lr,
-                    "architecture": f"{args.encoder_arch}",
-                    "epochs": args.epochs,
-                    "subject": args.subj,
-                    "notes": "v1v",
-                },
-            )
+        wandb.init(
+            project=args.wandb_p,
+            name=f"{args.hemi} {args.axis} sub{args.subj} {wandb_r}",
+            config={
+                "learning_rate": args.lr,
+                "architecture": f"{args.encoder_arch}",
+                "epochs": args.epochs,
+                "subject": args.subj,
+                "lr": args.lr,
+                **vars(args),
+            },
+        )
 
     transform = transforms.Compose(
         [
@@ -349,41 +299,36 @@ def main(rank, world_size, args):
     train_dataset = nsd_dataset(args, transform=transform)
     trainloader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=16,
+        batch_size=args.batch_size,
         shuffle=True,
         num_workers=16,
         pin_memory=True,
     )
 
     val_dataset = nsd_dataset(args, transform=transform, split="val")
+    val_dataset_avg = nsd_dataset_avg(args, transform=transform, split="val")
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=16,
-        shuffle=True,
-        num_workers=16,
+        batch_size=32,
+        num_workers=8,
         pin_memory=True,
     )
-
-    mask = train_dataset.get_parcel_mask(train_dataset.parcels["lh_betas"][0])
-    # model = brain_encoder(
-    #     args, train_dataset.max_parcel_size, train_dataset.num_parcels["lh_betas"], mask
-    # )
-    model = brain_encoder(
-        args,
-        train_dataset.metadata["lh_rois"]["V1v"].sum(),
-        train_dataset.num_parcels["lh_betas"],
-        mask,
-    )  # TODO: remove this
+    val_loader_avg = torch.utils.data.DataLoader(
+        val_dataset_avg,
+        batch_size=32,
+        num_workers=8,
+        pin_memory=True,
+    )
+    print(
+        f"len train_loader: {len(trainloader)}, len val_loader: {len(val_loader)}, len val_loader_avg: {len(val_loader_avg)}"
+    )
+    model = brain_encoder(args, train_dataset)
     model = model.cuda()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of model parameters: {num_parameters}")
+    print("linear layer weights shape:", model.embed.shape)
     print(model)
-
-    model_ddp = model
-    # if args.distributed:
-    #     model_ddp = torch.nn.parallel.DistributedDataParallel(
-    #         model, device_ids=[args.gpu], find_unused_parameters=True
-    #     )
+    model = torch.compile(model)
 
     criterion = torch.nn.MSELoss(reduction="sum")
 
@@ -424,7 +369,7 @@ def main(rank, world_size, args):
 
     else:
         optimizer = torch.optim.AdamW(
-            model_ddp.parameters(), lr=args.lr, weight_decay=args.weight_decay
+            model.parameters(), lr=args.lr, weight_decay=args.weight_decay
         )
         lr_scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer, args.lr_drop, gamma=0.5
@@ -432,161 +377,77 @@ def main(rank, world_size, args):
         torch.set_float32_matmul_precision("high")
 
     print("Start training")
-    # start_time = time.time()
-    mask = train_dataset.get_parcel_mask(train_dataset.parcels["lh_betas"][0])
-
-    model_ddp = torch.compile(model_ddp)
-
-    args.start_epoch = 0
+    best_val_perf = {"nonavg": 0, "avg": 0}
     for epoch in range(args.start_epoch, args.epochs):
-        train_stats = train_one_epoch(
-            model_ddp,
+        _ = train_one_epoch(
+            args,
+            model,
             criterion,
             trainloader,
             optimizer,
-            args.device,
             epoch,
-            mask.sum(),
             train_dataset,
             args.clip_max_norm,
         )
         lr_scheduler.step()
 
-        # ys, preds = evaluate(
-        #     model_ddp,
-        #     criterion,
-        #     val_loader,
-        #     args,
-        #     train_dataset,
-        #     args.device,
-        # )
-        # TODO: remove this
-        val_perf = evaluate(
-            model_ddp,
-            criterion,
-            val_loader,
-            args,
-            train_dataset,
-            args.device,
-        )
+        val_perf = {"nonavg": 0, "avg": 0}
 
-        # p = torch.tensor(
-        #     [corr(ys[i].detach().cpu(), preds[i].cpu()) for i in range(ys.shape[0])]
-        # )
-        # val_perf = p.mean(axis=0)[0].item()
+        for dataset_type, dl in zip(["nonavg", "avg"], [val_loader, val_loader_avg]):
+            print(f"evaluating {dataset_type} dataset")
 
-        print("val_perf:", val_perf)
+            ys, preds = evaluate(
+                args,
+                model,
+                criterion,
+                dl,
+                train_dataset,
+            )
 
-        if args.output_path:
-            # update best validation acc and save best model to output dir
-            if val_perf > best_val_perf:
-                best_val_perf = val_perf
+            p = torch.tensor(
+                [corr(ys[i].detach().cpu(), preds[i].cpu()) for i in range(ys.shape[0])]
+            )
+            val_perf[dataset_type] = p.mean(axis=0)[0].item()
 
-                if args.gpu == 0:
+            print(f"{dataset_type} val_perf:", val_perf[dataset_type])
+
+            if args.wandb_p:
+                wandb.log(
+                    {f"val_perf_{dataset_type}": val_perf[dataset_type], "epoch": epoch}
+                )
+
+            if args.output_path:
+                # update best validation acc and save best model to output dir
+                if val_perf[dataset_type] > best_val_perf[dataset_type]:
+                    best_val_perf[dataset_type] = val_perf[dataset_type]
+
                     with open(args.save_dir / "val_results.txt", "a") as f:
-                        f.write(f"epoch {epoch}, val_perf: {val_perf} \n")
+                        f.write(
+                            f"epoch {epoch}, {dataset_type} val_perf: {val_perf[dataset_type]} \n"
+                        )
 
-                try:
-                    if args.save_model:
-                        checkpoint_paths = [args.save_dir / "checkpoint.pth"]
-                        # print('checkpoint_path:',  checkpoint_paths)
-                        for checkpoint_path in checkpoint_paths:
-                            utils.save_on_master(
-                                {
-                                    "model": model.state_dict(),
-                                    "optimizer": optimizer.state_dict(),
-                                    "lr_scheduler": lr_scheduler.state_dict(),
-                                    "epoch": epoch,
-                                    "args": args,
-                                    "val_perf": best_val_perf,
-                                },
-                                checkpoint_path,
-                            )
-                except Exception as e:
-                    print("Error saving model")
-                    print(e)
-
-        # # Empty correlation array of shape: (LH vertices)
-        # lh_correlation = np.zeros(lh_fmri_val_pred.shape[1])
-        # # Correlate each predicted LH vertex with the corresponding ground truth vertex
-        # for v in tqdm(range(lh_fmri_val_pred.shape[1])):
-        #     lh_correlation[v] = corr(lh_fmri_val_pred[:, v], lh_fmri_val[:, v])[0]
-
-        # # Empty correlation array of shape: (RH vertices)
-        # rh_correlation = np.zeros(rh_fmri_val_pred.shape[1])
-        # # Correlate each predicted RH vertex with the corresponding ground truth vertex
-        # for v in tqdm(range(rh_fmri_val_pred.shape[1])):
-        #     rh_correlation[v] = corr(rh_fmri_val_pred[:, v], rh_fmri_val[:, v])[0]
-
-        # Select the correlation results vertices of each ROI
-        # roi_names = []
-        # lh_roi_correlation = []
-        # rh_roi_correlation = []
-        # for r1 in range(len(lh_challenge_rois)):
-        #     for r2 in roi_name_maps[r1].items():
-        #         if (
-        #             r2[0] != 0
-        #         ):  # zeros indicate to vertices falling outside the ROI of interest
-        #             roi_names.append(r2[1])
-        #             lh_roi_idx = np.where(lh_challenge_rois[r1] == r2[0])[0]
-        #             rh_roi_idx = np.where(rh_challenge_rois[r1] == r2[0])[0]
-        #             lh_roi_correlation.append(lh_correlation[lh_roi_idx])
-        #             rh_roi_correlation.append(rh_correlation[rh_roi_idx])
-        # roi_names.append("All vertices")
-        # lh_roi_correlation.append(lh_correlation)
-        # rh_roi_correlation.append(rh_correlation)
-
-        # # Create the plot
-        # lh_mean_roi_correlation = [
-        #     np.mean(
-        #         np.nan_to_num(
-        #             np.array(lh_roi_correlation[r]),
-        #             copy=True,
-        #             nan=0.0,
-        #             posinf=None,
-        #             neginf=None,
-        #         )
-        #     )
-        #     for r in range(len(lh_roi_correlation))
-        # ]
-        # rh_mean_roi_correlation = [
-        #     np.mean(
-        #         np.nan_to_num(
-        #             np.array(rh_roi_correlation[r]),
-        #             copy=True,
-        #             nan=0.0,
-        #             posinf=None,
-        #             neginf=None,
-        #         )
-        #     )
-        #     for r in range(len(rh_roi_correlation))
-        # ]
-
-        # val_perf = (lh_mean_roi_correlation[-1] + rh_mean_roi_correlation[-1]) / 2
-        # print("shape of rh_fmri_val_pred", rh_fmri_val_pred.shape)
-        if (args.gpu == 0) and (args.wandb_p):
-            wandb.log({"val_perf": val_perf})
-
-        #         np.save(args.save_dir + "lh_fmri_val_pred.npy", lh_fmri_val_pred)
-        #         np.save(args.save_dir + "rh_fmri_val_pred.npy", rh_fmri_val_pred)
-
-        #         lh_fmri_test_pred, rh_fmri_test_pred = test(
-        #             model,
-        #             criterion,
-        #             test_loader,
-        #             args,
-        #             lh_challenge_rois_s,
-        #             rh_challenge_rois_s,
-        #         )
-
-        #         lh_fmri_test_pred = lh_fmri_test_pred.astype(np.float32)
-        #         rh_fmri_test_pred = rh_fmri_test_pred.astype(np.float32)
-
-        #         np.save(args.save_dir + "/lh_pred_test.npy", lh_fmri_test_pred)
-        #         np.save(args.save_dir + "/rh_pred_test.npy", rh_fmri_test_pred)
-
-    if args.distributed:
-        destroy_process_group()
+                    try:
+                        if args.save_model:
+                            checkpoint_paths = [
+                                args.save_dir / f"checkpoint_{dataset_type}.pth"
+                            ]
+                            # print('checkpoint_path:',  checkpoint_paths)
+                            for checkpoint_path in checkpoint_paths:
+                                utils.save_on_master(
+                                    {
+                                        "model": model.state_dict(),
+                                        "optimizer": optimizer.state_dict(),
+                                        "lr_scheduler": lr_scheduler.state_dict(),
+                                        "epoch": epoch,
+                                        "args": args,
+                                        "val_perf": best_val_perf[dataset_type],
+                                        "dataset_type": dataset_type,
+                                    },
+                                    checkpoint_path,
+                                )
+                    except Exception as e:
+                        print("Error saving model")
+                        print(e)
 
     wandb.finish()
 
@@ -602,4 +463,6 @@ if __name__ == "__main__":
     # TODO: fix the shuffling issue before enabling distributed training
     # if args.distributed:
     #     args.world_size = torch.cuda.device_count()
-    #     mp.spawn(main, args=(args.world_size, args), nprocs=args.worl
+    #     mp.spawn(main, args=(args.world_size, args), nprocs=args.world_size)
+    # else:
+    main(args)

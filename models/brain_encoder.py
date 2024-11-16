@@ -8,7 +8,7 @@ from models.transformer import build_transformer
 
 
 class brain_encoder(nn.Module):
-    def __init__(self, args, max_parcel_size, num_parcels, mask):
+    def __init__(self, args, dataset):
         super().__init__()
 
         self.lr_backbone = args.lr_backbone
@@ -21,7 +21,7 @@ class brain_encoder(nn.Module):
         # if args.encoder_arch == 'transformer':
         self.transformer = build_transformer(args)
 
-        self.num_queries = num_parcels
+        self.num_queries = dataset.num_parcels
         self.hidden_dim = self.transformer.d_model
         self.linear_feature_dim = self.hidden_dim
 
@@ -47,17 +47,21 @@ class brain_encoder(nn.Module):
         # linear readout layers to the neural data
         self.readout_res = args.readout_res
 
-        self.max_parcel_size = max_parcel_size
-        self.num_parcels = num_parcels
+        self.max_parcel_size = dataset.max_parcel_size
+        self.num_parcels = dataset.num_parcels
 
-        weights = torch.randn(num_parcels, self.linear_feature_dim, max_parcel_size)
-        weights[~mask.unsqueeze(1).expand(-1, self.linear_feature_dim, -1)] = 0
+        weights = torch.randn(
+            dataset.num_parcels, self.linear_feature_dim, dataset.max_parcel_size
+        )
+        weights[~dataset.mask.unsqueeze(1).expand(-1, self.linear_feature_dim, -1)] = 0
         self.embed = torch.nn.Parameter(weights)
 
-        self.embed_bias = nn.Parameter(torch.randn(num_parcels, max_parcel_size))
+        self.embed_bias = nn.Parameter(
+            torch.randn(dataset.num_parcels, dataset.max_parcel_size)
+        )
         self.embed_bias = torch.nn.Parameter(
             torch.where(
-                mask,
+                dataset.mask,
                 self.embed_bias,
                 torch.tensor(0.0, device=self.embed_bias.device),
             )
@@ -80,8 +84,8 @@ class brain_encoder(nn.Module):
         _, _, h, w = pos_embed.shape
 
         # if backbone is resnet, apply 1x1 conv to project the feature to the transformer dimension
-        if "resnet" in self.backbone_arch:
-            input_proj_src = self.input_proj(input_proj_src)
+        # if "resnet" in self.backbone_arch:
+        #     input_proj_src = self.input_proj(input_proj_src)
 
         # print("input_proj_src.shape:", input_proj_src.shape)
         # print("mask.shape:", mask.shape)
