@@ -140,17 +140,32 @@ class nsd_dataset(nsd_dataset_tempate):
             np.isin(self.metadata["img_presentation_order"], self.split_imgs)
         )[0]
 
-    def __getitem__(self, idx):
-        idx = self.split_idxs[idx]
+        self.preload_data = preload_data
+        if preload_data:
+            self.preloaded_data = torch.empty(
+                (len(self.split_idxs), self.num_parcels, self.max_parcel_size)
+            )
+            for i, idx in enumerate(tqdm(self.split_idxs)):
+                self.preloaded_data[i] = self.parcellate_fmri(
+                    torch.from_numpy(self.betas[idx]),
+                    self.parcels,
+                )
+            del self.betas
 
-        img_ind = self.img_order[idx]  # image index in nsd
+    def __getitem__(self, idx):
+        split_idx = self.split_idxs[idx]
+
+        img_ind = self.img_order[split_idx]  # image index in nsd
         img = self.imgs["imgBrick"][img_ind]
         img = self.transform_img(img)
 
-        fmri_data = self.parcellate_fmri(
-            torch.from_numpy(self.betas[idx]),
-            self.parcels,
-        )
+        if hasattr(self, "preloaded_data"):
+            fmri_data = self.preloaded_data[idx]
+        else:
+            fmri_data = self.parcellate_fmri(
+                torch.from_numpy(self.betas[split_idx]),
+                self.parcels,
+            )
 
         return img, fmri_data
 
@@ -159,7 +174,9 @@ class nsd_dataset(nsd_dataset_tempate):
 
 
 class nsd_dataset_avg(nsd_dataset_tempate):
-    def __init__(self, args, split="train", parcel_paths=None, transform=None):
+    def __init__(
+        self, args, split="train", parcel_paths=None, transform=None, preload_data=False
+    ):
         super().__init__(args, split, parcel_paths, transform)
 
         assert split in [
@@ -175,17 +192,32 @@ class nsd_dataset_avg(nsd_dataset_tempate):
             ]
         )
 
+        if preload_data:
+            self.preloaded_data = torch.empty(
+                (len(self.split_imgs), self.num_parcels, self.max_parcel_size)
+            )
+            for i in tqdm(range(len(self.split_imgs))):
+                data_idxs = self.img_to_runs[i]
+                data = torch.from_numpy(self.betas[data_idxs])
+                data = torch.mean(data, axis=0)
+
+                self.preloaded_data[i] = self.parcellate_fmri(data, self.parcels)
+
+            del self.betas
+
     def __getitem__(self, i):
         img_ind = self.split_imgs[i]  # image index in nsd
         img = self.imgs["imgBrick"][img_ind]
         img = self.transform_img(img)
 
-        data_idxs = self.img_to_runs[i]
+        if hasattr(self, "preloaded_data"):
+            fmri_data = self.preloaded_data[i]
+        else:
+            data_idxs = self.img_to_runs[i]
 
-        data = torch.from_numpy(self.betas[data_idxs])
-        data = torch.mean(data, axis=0)
-
-        fmri_data = self.parcellate_fmri(data, self.parcels)
+            data = torch.from_numpy(self.betas[data_idxs])
+            data = torch.mean(data, axis=0)
+            fmri_data = self.parcellate_fmri(data, self.parcels)
 
         return img, fmri_data
 

@@ -190,7 +190,7 @@ def get_args_parser():
         "--num_workers", default=4, type=int, help="number of data loading num_workers"
     )
     parser.add_argument(
-        "--epochs", default=20, type=int, help="number of total epochs to run"
+        "--epochs", default=30, type=int, help="number of total epochs to run"
     )
     parser.add_argument("--batch_size", default=16, type=int, help="mini-batch size")
     parser.add_argument(
@@ -296,7 +296,7 @@ def main(args):
             ),  # normalize the images color channels
         ]
     )
-    train_dataset = nsd_dataset(args, transform=transform)
+    train_dataset = nsd_dataset(args, transform=transform, preload_data=True)
     trainloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
