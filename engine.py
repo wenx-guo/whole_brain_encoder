@@ -8,6 +8,7 @@ from utils.utils import NestedTensor, nested_tensor_from_tensor_list
 
 import utils.utils as utils
 import numpy as np
+from scipy.stats import pearsonr as corr
 import wandb
 
 
@@ -65,12 +66,23 @@ def train_one_epoch(
         metric_logger.update(loss_labels=loss_value)  # loss_dict_reduced['loss_recon']
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
-        out = unwrap_fmri(outputs.shape[0], outputs.cpu(), dataset, args.metaparcel_idx)
-        y = unwrap_fmri(targets.shape[0], targets.cpu(), dataset, args.metaparcel_idx)
+        with torch.no_grad():
+            out = unwrap_fmri(
+                outputs.shape[0],
+                outputs.detach().cpu(),
+                dataset,
+                args.metaparcel_idx,
+            )
+            y = unwrap_fmri(
+                targets.shape[0],
+                targets.detach().cpu(),
+                dataset,
+                args.metaparcel_idx,
+            )
 
-        train_corr = torch.corrcoef(torch.stack([out.flatten(), y.flatten()]))[
-            0, 1
-        ].item()
+            train_corr = torch.corrcoef(torch.stack([out.flatten(), y.flatten()]))[
+                0, 1
+            ].item()
 
         running_loss += loss.item()
         running_corr += train_corr
@@ -89,6 +101,7 @@ def train_one_epoch(
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
+
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
@@ -111,10 +124,11 @@ def evaluate(args, model, criterion, data_loader, dataset):
     )  # , fmt='{value:.2f}'
     header = "Test:"
 
-    preds = []
-    ys = []
-
     num_valid_voxels = dataset.mask.sum()
+    val_correlations = torch.zeros(num_valid_voxels)
+
+    ys = []
+    preds = []
 
     for imgs, targets in metric_logger.log_every(data_loader, 25, header):
         imgs = imgs.to(args.device, non_blocking=True)
@@ -123,22 +137,20 @@ def evaluate(args, model, criterion, data_loader, dataset):
         outputs = outputs["pred"]
         loss = criterion(outputs, targets) / num_valid_voxels
 
-        preds.append(
-            unwrap_fmri(
-                outputs.shape[0],
-                outputs.cpu(),
-                dataset,
-                args.metaparcel_idx,
-            )
+        outputs = unwrap_fmri(
+            outputs.shape[0],
+            outputs.cpu(),
+            dataset,
+            args.metaparcel_idx,
         )
-        ys.append(
-            unwrap_fmri(
-                targets.shape[0],
-                targets.cpu(),
-                dataset,
-                args.metaparcel_idx,
-            )
+        targets = unwrap_fmri(
+            targets.shape[0],
+            targets.cpu(),
+            dataset,
+            args.metaparcel_idx,
         )
+        ys.append(targets)
+        preds.append(outputs)
 
         loss_value = loss.item()
         metric_logger.update(loss_labels=loss_value)
@@ -146,7 +158,16 @@ def evaluate(args, model, criterion, data_loader, dataset):
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
 
-    return torch.vstack(ys), torch.vstack(preds)
+    outputs = torch.cat(preds, dim=0)
+    targets = torch.cat(ys, dim=0)
+    for v in tqdm(
+        range(num_valid_voxels),
+        desc="Calculating voxel-wise validation correlations",
+        leave=False,
+    ):
+        val_correlations[v] = corr(outputs[:, v].cpu(), targets[:, v].cpu())[0]
+
+    return val_correlations
 
 
 @torch.no_grad()

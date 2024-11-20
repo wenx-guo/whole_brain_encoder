@@ -215,9 +215,9 @@ class nsd_dataset_avg(nsd_dataset_tempate):
         else:
             data_idxs = self.img_to_runs[i]
 
-            data = torch.from_numpy(self.betas[data_idxs])
-            data = torch.mean(data, axis=0)
-            fmri_data = self.parcellate_fmri(data, self.parcels)
+        data = torch.from_numpy(self.betas[data_idxs])
+        data = torch.mean(data, axis=0)
+        fmri_data = self.parcellate_fmri(data, self.parcels)
 
         return img, fmri_data
 
