@@ -14,7 +14,7 @@ from models.brain_encoder import brain_encoder
 from engine import evaluate as evaluate
 from engine import train_one_epoch as train_one_epoch
 
-from utils.args import get_args_parser, get_model_dir
+from utils.args import get_args_parser, get_model_dir_args
 import utils.utils as utils
 
 from pathlib import Path
@@ -42,7 +42,7 @@ def main(args):
         args.metaparcel_idx = 0
 
     if args.output_path:
-        args.save_dir = get_model_dir(args)
+        args.save_dir = get_model_dir_args(args)
 
         if not os.path.exists(args.save_dir):
             os.makedirs(args.save_dir, exist_ok=True)
@@ -193,15 +193,23 @@ def main(args):
         for dataset_type, dl in zip(["nonavg", "avg"], [val_loader, val_loader_avg]):
             print(f"evaluating {dataset_type} dataset")
 
-            val_correlation = evaluate(
+            outputs, targets, voxel_mask = evaluate(
                 args,
                 model,
                 criterion,
                 dl,
                 train_dataset,
             )
+            num_valid_voxels = outputs.shape[1]
+            val_correlation = torch.zeros(num_valid_voxels)
+            for v in tqdm(
+                range(num_valid_voxels),
+                desc="Calculating voxel-wise validation correlations",
+                leave=False,
+            ):
+                val_correlation[v] = corr(outputs[:, v].cpu(), targets[:, v].cpu())[0]
 
-            val_perf[dataset_type] = val_correlation.mean().item()
+            val_perf[dataset_type] = val_correlation[voxel_mask].mean().item()
 
             print(f"{dataset_type} val_perf:", val_perf[dataset_type])
 
@@ -244,7 +252,7 @@ def main(args):
                         print(e)
 
                     np.save(
-                        args.save_dir / f"{args.hemi}_val_corr.npy",
+                        args.save_dir / f"{args.hemi}_val_corr_{dataset_type}.npy",
                         val_correlation.numpy(),
                     )
 

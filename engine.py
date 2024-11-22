@@ -111,11 +111,11 @@ def unwrap_fmri(batch_size, fmri_data, dataset, metaparcel_idx):
         dataset.parcels, fmri_data.permute(1, 0, 2), dataset.mask
     ):
         recon[:, idxs] = betas[:, m]
-    return recon[:, dataset.labels[:, 0] == metaparcel_idx]
+    return recon, dataset.labels[:, 0] == metaparcel_idx
 
 
 @torch.no_grad()
-def evaluate(args, model, criterion, data_loader, dataset):
+def evaluate(args, model, criterion, data_loader, dataset, print_freq=25):
     model.eval()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -125,25 +125,28 @@ def evaluate(args, model, criterion, data_loader, dataset):
     header = "Test:"
 
     num_valid_voxels = dataset.mask.sum()
-    val_correlations = torch.zeros(num_valid_voxels)
 
     ys = []
     preds = []
 
-    for imgs, targets in metric_logger.log_every(data_loader, 25, header):
+    for imgs, targets in metric_logger.log_every(data_loader, print_freq, header):
         imgs = imgs.to(args.device, non_blocking=True)
         targets = targets.to(args.device, non_blocking=True).to(torch.float32)
         outputs = model(imgs)
         outputs = outputs["pred"]
-        loss = criterion(outputs, targets) / num_valid_voxels
 
-        outputs = unwrap_fmri(
+        if criterion is not None:
+            loss = criterion(outputs, targets) / num_valid_voxels
+        else:
+            loss = torch.tensor(0)
+
+        outputs, voxel_mask = unwrap_fmri(
             outputs.shape[0],
             outputs.cpu(),
             dataset,
             args.metaparcel_idx,
         )
-        targets = unwrap_fmri(
+        targets, _ = unwrap_fmri(
             targets.shape[0],
             targets.cpu(),
             dataset,
@@ -160,14 +163,8 @@ def evaluate(args, model, criterion, data_loader, dataset):
 
     outputs = torch.cat(preds, dim=0)
     targets = torch.cat(ys, dim=0)
-    for v in tqdm(
-        range(num_valid_voxels),
-        desc="Calculating voxel-wise validation correlations",
-        leave=False,
-    ):
-        val_correlations[v] = corr(outputs[:, v].cpu(), targets[:, v].cpu())[0]
 
-    return val_correlations
+    return outputs, targets, voxel_mask
 
 
 @torch.no_grad()

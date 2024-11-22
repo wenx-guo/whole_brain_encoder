@@ -8,7 +8,6 @@ import h5py
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from scipy.stats import pearsonr as corr
 import torch.nn.functional as F
 
 
@@ -29,7 +28,7 @@ class nsd_dataset_tempate(Dataset):
             "train",
             "test",
             "val",
-        ], "split must be either train, test or val"
+        ], "split must be either train, test, val, or custom"
         self.split_imgs = self.metadata[f"{split}_img_num"]
 
         self.betas = h5py.File(neural_data_path / f"betas_sub-{self.subj:02}.h5", "r")[
@@ -208,21 +207,47 @@ class nsd_dataset_avg(nsd_dataset_tempate):
     def __getitem__(self, i):
         img_ind = self.split_imgs[i]  # image index in nsd
         img = self.imgs["imgBrick"][img_ind]
-        img = self.transform_img(img)
+
+        if self.transform is not None:
+            img = self.transform_img(img)
 
         if hasattr(self, "preloaded_data"):
             fmri_data = self.preloaded_data[i]
         else:
             data_idxs = self.img_to_runs[i]
-
-        data = torch.from_numpy(self.betas[data_idxs])
-        data = torch.mean(data, axis=0)
-        fmri_data = self.parcellate_fmri(data, self.parcels)
+            data = torch.from_numpy(self.betas[data_idxs])
+            data = torch.mean(data, axis=0)
+            fmri_data = self.parcellate_fmri(data, self.parcels)
 
         return img, fmri_data
 
     def __len__(self):
         return len(self.split_imgs)
+
+
+class nsd_dataset_custom(nsd_dataset_tempate):
+    """For when you bring your own data"""
+
+    def __init__(
+        self,
+        img_data,
+        args,
+        parcel_paths=None,
+        transform=None,
+    ):
+        super().__init__(args, "val", parcel_paths, transform)
+
+        del self.betas
+        self.img_data = img_data
+
+    def __getitem__(self, idx):
+        img = self.img_data[idx]
+        img = self.transform_img(img)
+
+        return img, torch.empty((self.num_parcels, self.max_parcel_size))
+
+    def __len__(self):
+        return len(self.img_data)
 
 
 class nsd_dataset_avg_lightweight(Dataset):
@@ -439,20 +464,6 @@ class algonauts_dataset(Dataset):
     def __len__(self):
         return self.length
 
-
-def make_coco_transforms():
-    normalize = T.Compose(
-        [T.ToTensor(), T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])]
-    )
-
-    return T.Compose(
-        [
-            T.RandomResize([800], max_size=1333),
-            normalize,
-        ]
-    )
-
-    raise ValueError(f"unknown {image_set}")
 
 
 def fetch_dataloaders(
