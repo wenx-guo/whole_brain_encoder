@@ -89,7 +89,7 @@ def main(args):
             ),  # normalize the images color channels
         ]
     )
-    train_dataset = nsd_dataset(args, transform=transform, preload_data=True)
+    train_dataset = nsd_dataset_avg(args, transform=transform, preload_data=True)
     trainloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -100,7 +100,7 @@ def main(args):
     )
 
     val_dataset = nsd_dataset(args, transform=transform, split="val")
-    val_dataset_avg = nsd_dataset_avg(args, transform=transform, split="val")
+    val_dataset_avg = nsd_dataset(args, transform=transform, split="val")
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=16,

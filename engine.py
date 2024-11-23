@@ -36,7 +36,7 @@ def train_one_epoch(
     num_valid_voxels = dataset.mask.sum()
 
     running_loss = 0
-    running_corr = 0
+    # running_corr = 0
 
     for batch_idx, (imgs, targets) in enumerate(
         metric_logger.log_every(data_loader, print_freq, header)
@@ -66,37 +66,37 @@ def train_one_epoch(
         metric_logger.update(loss_labels=loss_value)  # loss_dict_reduced['loss_recon']
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
-        with torch.no_grad():
-            out = unwrap_fmri(
-                outputs.shape[0],
-                outputs.detach().cpu(),
-                dataset,
-                args.metaparcel_idx,
-            )
-            y = unwrap_fmri(
-                targets.shape[0],
-                targets.detach().cpu(),
-                dataset,
-                args.metaparcel_idx,
-            )
+        # with torch.no_grad():
+        #     out = unwrap_fmri(
+        #         outputs.shape[0],
+        #         outputs.detach().cpu(),
+        #         dataset,
+        #         args.metaparcel_idx,
+        #     )
+        #     y = unwrap_fmri(
+        #         targets.shape[0],
+        #         targets.detach().cpu(),
+        #         dataset,
+        #         args.metaparcel_idx,
+        #     )
 
-            train_corr = torch.corrcoef(torch.stack([out.flatten(), y.flatten()]))[
-                0, 1
-            ].item()
+        #     train_corr = torch.corrcoef(torch.stack([out.flatten(), y.flatten()]))[
+        #         0, 1
+        #     ].item()
 
         running_loss += loss.item()
-        running_corr += train_corr
+        # running_corr += train_corr
         if batch_idx % print_freq == print_freq - 1:
             wandb.log(
                 {
                     "Training Loss": running_loss / print_freq,
                     "Epoch": epoch,
-                    "Training Corr": running_corr / print_freq,
+                    # "Training Corr": running_corr / print_freq,
                     "Batch": batch_idx + epoch * len(data_loader),
                 }
             )
             running_loss = 0
-            running_corr = 0
+            # running_corr = 0
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

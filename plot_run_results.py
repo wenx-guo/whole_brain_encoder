@@ -65,7 +65,9 @@ def plot_run_results(args, avg_or_nonavg):
             args.axis = axis
             model_dir = Path(get_model_dir_args(args))
 
-            val_corr = np.load(model_dir / f"{hemi}_val_corr_{avg_or_nonavg}.npy")
+            val_corr = np.load(
+                model_dir / f"{hemi}_{args.split}_corr_{avg_or_nonavg}.npy"
+            )
             val_corr = np.nan_to_num(val_corr)
 
             val_correlation += val_corr
@@ -78,9 +80,9 @@ def plot_run_results(args, avg_or_nonavg):
         plot_parcels(
             val_correlations["lh"],
             val_correlations["rh"],
-            title=f"Sub: {args.subj} Transformer ({avg_or_nonavg} data) Validation Correlation, clip={clip_value}",
+            title=f"Sub: {args.subj} Transformer ({avg_or_nonavg} data) {args.split} Correlation, clip={clip_value}",
             fig_path=run_dir
-            / f"transformer_validation_correlation_{avg_or_nonavg}_clip{str(clip_value).replace('.', '')}.jpg",
+            / f"transformer_{args.split}_correlation_{avg_or_nonavg}_clip{str(clip_value).replace('.', '')}.jpg",
             cmap="RdBu_r",
             clip=clip_value,
         )
@@ -89,37 +91,55 @@ def plot_run_results(args, avg_or_nonavg):
 
     plt_title = f"sub{args.subj} enc_{args.enc_output_layer} run_{args.run} ({avg_or_nonavg} data) ROI Correlation"
 
-    plot_roi_correlation(plt_title, val_correlations, avg_or_nonavg, run_dir)
+    plot_roi_correlation(
+        plt_title, args.subj, val_correlations, avg_or_nonavg, run_dir, args.split
+    )
 
     # with open(run_dir, "a") as f:
     #     f.write(f"avg correlation: {mean_coors}\n")
 
 
-def plot_roi_correlation(plt_title, subj, val_correlations, avg_or_nonavg, save_dir):
+def plot_roi_correlation(
+    plt_title, subj, val_correlations, avg_or_nonavg, save_dir, split
+):
     neural_data_path = Path(
         "/engram/nklab/datasets/natural_scene_dataset/model_training_datasets/neural_data"
     )
     metadata = np.load(
-        neural_data_path / f"metadata_sub-{subj:02}.npy", allow_pickle=True
+        neural_data_path / f"metadata_sub-{int(subj):02}.npy", allow_pickle=True
     ).item()
 
+    challenge_cover = np.zeros(
+        len(metadata["lh_anterior_vertices"]) + len(metadata["rh_anterior_vertices"]),
+        dtype=bool,
+    )
     roi_corr = {"lh": {}, "rh": {}}
     for hemi in ["lh", "rh"]:
         for roi, vertices in metadata[f"{hemi}_rois"].items():
             roi_corr[hemi][roi] = val_correlations[hemi][vertices].mean()
-
-        roi_corr[hemi]["All vertices"] = val_correlations[hemi].mean()
+            challenge_cover |= vertices
+        roi_corr[hemi]["All vertices"] = val_correlations[hemi][challenge_cover].mean()
 
     x = np.arange(len((roi_corr["lh"].keys())))
     width = 0.35
     fig, ax = plt.subplots(figsize=(12, 6))
-    for hemi, pos in zip(["lh", "rh"], [x + width / 2, x - width / 2]):
-        ax.bar(
+    for hemi, pos in zip(["lh", "rh"], [x - width / 2, x + width / 2]):
+        values = [roi_corr[hemi][key] for key in roi_corr[hemi].keys()]
+        bars = ax.bar(
             pos,
-            [roi_corr[hemi][key] for key in roi_corr[hemi].keys()],
+            values,
             width,
             label=hemi,
         )
+        for bar, value in zip(bars, values):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,  # X position (center of the bar)
+                bar.get_height() + 0.05,  # Y position (top of the bar)
+                f"{value:.2f}",  # Text (formatted value)
+                ha="center",
+                va="bottom",
+                fontsize=6,  # Alignment and size
+            )
     ax.set_ylabel("Mean Pearson's r")
     ax.set_xticks(x)
     ax.set_xticklabels(list(roi_corr["lh"].keys()), rotation=90, ha="center")
@@ -130,7 +150,7 @@ def plot_roi_correlation(plt_title, subj, val_correlations, avg_or_nonavg, save_
 
     plt.tight_layout()
     plt.title(plt_title)
-    plt.savefig(save_dir / f"roi_correlation_{avg_or_nonavg}.jpg", dpi=300)
+    plt.savefig(save_dir / f"{split}_roi_correlation_{avg_or_nonavg}.jpg", dpi=300)
 
 
 def main():
@@ -139,6 +159,7 @@ def main():
     )
     parser.add_argument("--ensemble", type=bool, default=False)
     parser.add_argument("--ensemble_dir", type=str, default="enc_1_5_run_1_5")
+    parser.add_argument("--split", type=str, default="val")
     args = parser.parse_args()
 
     if args.ensemble:
@@ -147,16 +168,16 @@ def main():
             / args.ensemble_dir
         )
         val_correlations = {}
-        val_correlations["lh"] = np.load(results_dir / "lh_val_corr_avg.npy")
-        val_correlations["rh"] = np.load(results_dir / "rh_val_corr_avg.npy")
+        val_correlations["lh"] = np.load(results_dir / f"lh_{args.split}_corr_avg.npy")
+        val_correlations["rh"] = np.load(results_dir / f"rh_{args.split}_corr_avg.npy")
 
         for clip_value in [0.3, 1]:
             plot_parcels(
                 val_correlations["lh"],
                 val_correlations["rh"],
-                title=f"Sub: {args.subj} Transformer (avg data) Validation Correlation, clip={clip_value}",
+                title=f"Sub: {args.subj} Transformer (avg data) {args.split} Correlation, clip={clip_value}",
                 fig_path=results_dir
-                / f"emsemble_validation_correlation_avg_clip{str(clip_value).replace('.', '')}.jpg",
+                / f"emsemble_{args.split}_correlation_avg_clip{str(clip_value).replace('.', '')}.jpg",
                 cmap="RdBu_r",
                 clip=clip_value,
             )
@@ -167,6 +188,7 @@ def main():
             val_correlations,
             "avg",
             results_dir,
+            args.split,
         )
 
         return

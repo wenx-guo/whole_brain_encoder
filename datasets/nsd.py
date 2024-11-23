@@ -465,7 +465,6 @@ class algonauts_dataset(Dataset):
         return self.length
 
 
-
 def fetch_dataloaders(
     args, train="train", shuffle=True, train_val_split="none", download=True
 ):
@@ -512,6 +511,10 @@ def fetch_dataloaders(
             ),  # normalize the images color channels
         ]
     )
+    args.data_dir = (
+        Path("/engram/nklab/algonauts/algonauts_2023_challenge_data")
+        / f"subj{int(args.subj):02}"
+    )
 
     if train == "train":
         train_img_dir = os.path.join(args.data_dir, "training_split", "training_images")
@@ -532,8 +535,8 @@ def fetch_dataloaders(
         if args.run < 20:
             np.random.shuffle(idxs)
 
-        if args.output_path:
-            np.save(args.save_dir + "/idxs.npy", idxs)
+        # if args.output_path:
+        #     np.save(args.save_dir + "/idxs.npy", idxs)
 
         # Assign 90% of the shuffled stimulus images to the training partition,
         # and 10% to the test partition
