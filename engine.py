@@ -33,19 +33,31 @@ def train_one_epoch(
     )  # , fmt='{value:.2f}'
     header = "Epoch: [{}]".format(epoch)
 
-    num_valid_voxels = dataset.mask.sum()
+    masks = dataset.masks
+    num_valid_voxels = masks.sum()
+    masks = masks.to(args.device, non_blocking=True)
+    parcels = dataset.padded_parcels.to(args.device, non_blocking=True)
 
     running_loss = 0
-    # running_corr = 0
 
     for batch_idx, (imgs, targets) in enumerate(
         metric_logger.log_every(data_loader, print_freq, header)
     ):
         imgs = imgs.to(args.device, non_blocking=True)
-        targets = targets.to(args.device, non_blocking=True).to(torch.float32)
+        target_betas = (
+            targets["betas"].to(args.device, non_blocking=True).to(torch.float32)
+        )
+
         outputs = model(imgs)
         outputs = outputs["pred"]
-        loss = criterion(outputs, targets) / num_valid_voxels
+        # outputs_recon = torch.zeros_like(target_betas)
+        # outputs_recon.index_add_(
+        #     1,
+        #     parcels[masks],
+        #     outputs.flatten(start_dim=1)[:, masks.flatten()],
+        # )
+        # loss = criterion(outputs_recon, target_betas) / num_valid_voxels
+        loss = criterion(outputs, target_betas) / num_valid_voxels
 
         loss_value = loss.item()
 
@@ -66,26 +78,7 @@ def train_one_epoch(
         metric_logger.update(loss_labels=loss_value)  # loss_dict_reduced['loss_recon']
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
-        # with torch.no_grad():
-        #     out = unwrap_fmri(
-        #         outputs.shape[0],
-        #         outputs.detach().cpu(),
-        #         dataset,
-        #         args.metaparcel_idx,
-        #     )
-        #     y = unwrap_fmri(
-        #         targets.shape[0],
-        #         targets.detach().cpu(),
-        #         dataset,
-        #         args.metaparcel_idx,
-        #     )
-
-        #     train_corr = torch.corrcoef(torch.stack([out.flatten(), y.flatten()]))[
-        #         0, 1
-        #     ].item()
-
         running_loss += loss.item()
-        # running_corr += train_corr
         if batch_idx % print_freq == print_freq - 1:
             wandb.log(
                 {
@@ -96,22 +89,20 @@ def train_one_epoch(
                 }
             )
             running_loss = 0
-            # running_corr = 0
 
-    # gather the stats from all processes
-    metric_logger.synchronize_between_processes()
+    # metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def unwrap_fmri(batch_size, fmri_data, dataset, metaparcel_idx):
-    recon = torch.zeros(batch_size, *dataset.labels[:, 0].shape)
-    for idxs, betas, m in zip(
-        dataset.parcels, fmri_data.permute(1, 0, 2), dataset.mask
-    ):
-        recon[:, idxs] = betas[:, m]
-    return recon, dataset.labels[:, 0] == metaparcel_idx
+# def unwrap_fmri(batch_size, fmri_data, dataset, metaparcel_idx):
+#     recon = torch.zeros(batch_size, *dataset.labels[:, 0].shape)
+#     for idxs, betas, m in zip(
+#         dataset.parcels, fmri_data.permute(1, 0, 2), dataset.mask
+#     ):
+#         recon[:, idxs] = betas[:, m]
+#     return recon, dataset.labels[:, 0] == metaparcel_idx
 
 
 @torch.no_grad()
@@ -124,35 +115,36 @@ def evaluate(args, model, criterion, data_loader, dataset, print_freq=25):
     )  # , fmt='{value:.2f}'
     header = "Test:"
 
-    num_valid_voxels = dataset.mask.sum()
+    masks = dataset.masks
+    num_valid_voxels = masks.sum()
+    masks = masks.to(args.device, non_blocking=True)
+    parcels = dataset.padded_parcels.to(args.device, non_blocking=True)
 
     ys = []
     preds = []
 
     for imgs, targets in metric_logger.log_every(data_loader, print_freq, header):
+        target_betas = (
+            targets["betas"].to(args.device, non_blocking=True).to(torch.float32)
+        )
+
         imgs = imgs.to(args.device, non_blocking=True)
-        targets = targets.to(args.device, non_blocking=True).to(torch.float32)
         outputs = model(imgs)
         outputs = outputs["pred"]
 
+        # outputs_recon = torch.zeros_like(target_betas)
+        # outputs_recon.index_add_(
+        #     1,
+        #     parcels[masks],
+        #     outputs.flatten(start_dim=1)[:, masks.flatten()],
+        # )
+
         if criterion is not None:
-            loss = criterion(outputs, targets) / num_valid_voxels
+            loss = criterion(outputs, target_betas) / num_valid_voxels
         else:
             loss = torch.tensor(0)
 
-        outputs, voxel_mask = unwrap_fmri(
-            outputs.shape[0],
-            outputs.cpu(),
-            dataset,
-            args.metaparcel_idx,
-        )
-        targets, _ = unwrap_fmri(
-            targets.shape[0],
-            targets.cpu(),
-            dataset,
-            args.metaparcel_idx,
-        )
-        ys.append(targets)
+        ys.append(target_betas)
         preds.append(outputs)
 
         loss_value = loss.item()
@@ -164,7 +156,7 @@ def evaluate(args, model, criterion, data_loader, dataset, print_freq=25):
     outputs = torch.cat(preds, dim=0)
     targets = torch.cat(ys, dim=0)
 
-    return outputs, targets, voxel_mask
+    return outputs, targets, dataset.axis_mask
 
 
 @torch.no_grad()

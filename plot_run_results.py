@@ -109,12 +109,13 @@ def plot_roi_correlation(
         neural_data_path / f"metadata_sub-{int(subj):02}.npy", allow_pickle=True
     ).item()
 
-    challenge_cover = np.zeros(
-        len(metadata["lh_anterior_vertices"]) + len(metadata["rh_anterior_vertices"]),
-        dtype=bool,
-    )
     roi_corr = {"lh": {}, "rh": {}}
     for hemi in ["lh", "rh"]:
+        challenge_cover = np.zeros(
+            len(metadata[f"{hemi}_anterior_vertices"])
+            + len(metadata[f"{hemi}_posterior_vertices"]),
+            dtype=bool,
+        )
         for roi, vertices in metadata[f"{hemi}_rois"].items():
             roi_corr[hemi][roi] = val_correlations[hemi][vertices].mean()
             challenge_cover |= vertices

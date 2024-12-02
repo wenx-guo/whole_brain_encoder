@@ -50,22 +50,37 @@ class brain_encoder(nn.Module):
         self.max_parcel_size = dataset.max_parcel_size
         self.num_parcels = dataset.num_parcels
 
-        weights = torch.randn(
-            dataset.num_parcels, self.linear_feature_dim, dataset.max_parcel_size
-        )
-        weights[~dataset.mask.unsqueeze(1).expand(-1, self.linear_feature_dim, -1)] = 0
-        self.embed = torch.nn.Parameter(weights)
-
-        self.embed_bias = nn.Parameter(
-            torch.randn(dataset.num_parcels, dataset.max_parcel_size)
-        )
-        self.embed_bias = torch.nn.Parameter(
-            torch.where(
-                dataset.mask,
-                self.embed_bias,
-                torch.tensor(0.0, device=self.embed_bias.device),
+        # this is a mask of shape (num_parcels, num_voxels) where each row is the voxels that belong in a parcel
+        self.parcel_mask = (
+            torch.stack(
+                [
+                    torch.zeros(dataset.num_hemi_voxels).scatter_(0, parcel, 1)
+                    for parcel in dataset.parcels
+                ]
             )
+            .permute(1, 0)
+            .to(args.device)
         )
+
+        # parcel_mask = dataset.masks
+        # weights = torch.randn(
+        #     dataset.num_parcels, self.linear_feature_dim, dataset.max_parcel_size
+        # )
+        # weights[~parcel_mask.unsqueeze(1).expand(-1, self.linear_feature_dim, -1)] = 0
+        # self.embed = torch.nn.Parameter(weights)
+
+        # self.embed_bias = nn.Parameter(
+        #     torch.randn(dataset.num_parcels, dataset.max_parcel_size)
+        # )
+        # self.embed_bias = torch.nn.Parameter(
+        #     torch.where(
+        #         parcel_mask,
+        #         self.embed_bias,
+        #         torch.tensor(0.0, device=self.embed_bias.device),
+        #     )
+        # )
+
+        self.embed = nn.Sequential(nn.Linear(self.hidden_dim, dataset.num_hemi_voxels))
 
     def forward(self, samples: NestedTensor):
         if isinstance(samples, (list, torch.Tensor)):
@@ -106,15 +121,20 @@ class brain_encoder(nn.Module):
         # input to bmm: [500, bs, 768] by [500, 768, 2600]
         # print("output_tokens.shape:", output_tokens.permute(1, 0, 2).shape)
         # print("self.embed.shape:", self.embed.shape)
-        pred = torch.bmm(
-            output_tokens.permute(1, 0, 2),
-            self.embed,
-        )
+        # pred = torch.bmm(
+        #     output_tokens.permute(1, 0, 2),
+        #     self.embed,
+        # )
         # shape = [num_parcels, batch_size, max_parcel_size] like (500, bs, 2600)
 
-        pred = pred.permute(1, 0, 2)
+        # pred = pred.permute(1, 0, 2)
         # shape = [batch_size, num_parcels, max_parcel_size] like (bs, 500, 2600)
-        pred = pred + self.embed_bias
+        # pred = pred + self.embed_bias
+
+        pred = self.embed(output_tokens)
+        pred = torch.movedim(pred, 1, -1)
+        pred = pred * self.parcel_mask
+        pred = torch.sum(pred, dim=-1)
 
         # if self.encoder_arch == "transformer":
         #     hs = self.transformer(
@@ -169,7 +189,7 @@ class brain_encoder(nn.Module):
             # "lh_f_pred": lh_f_pred,
             # "rh_f_pred": rh_f_pred,
             "pred": pred,
-            "output_tokens": output_tokens,
+            # "output_tokens": output_tokens,
         }
 
         return out

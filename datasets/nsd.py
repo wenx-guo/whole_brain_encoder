@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 import torch.nn.functional as F
+from itertools import chain
 
 
 class nsd_dataset_tempate(Dataset):
@@ -43,25 +44,118 @@ class nsd_dataset_tempate(Dataset):
             np.load(parcel_path / f"{args.hemi}_labels_s{self.subj:02}.npy")
         )
 
-        self.parcels = torch.from_numpy(
-            np.load(parcel_path / f"{args.hemi}_labels_s{self.subj:02}.npy")
+        self.axis_mask = self.labels[:, 0] == args.metaparcel_idx
+
+        self.parcels = np.load(parcel_path / f"{args.hemi}_labels_s{self.subj:02}.npy")
+        self.num_hemi_voxels = len(self.parcels)
+        self.num_axis_voxels = self.axis_mask.sum()
+
+        if not isinstance(self.parcels[0], list) and not np.any(
+            np.array([len(p) > 2 for p in self.parcels])
+        ):
+            self.overlap = False
+            self.parcels = torch.from_numpy(self.parcels)
+            self.parcels = self.reformat_parcels_nonoverlapping(
+                self.parcels, self.parcels
+            )[args.metaparcel_idx]
+        else:
+            self.overlap = True
+            self.parcels = self.reformat_parcels(self.parcels, args.metaparcel_idx)
+
+        self.max_parcel_size = max([len(p) for p in self.parcels])
+
+        self.padded_parcels = torch.nn.utils.rnn.pad_sequence(
+            self.parcels, batch_first=True, padding_value=-1
         )
-        self.max_parcel_size = torch.max(
-            torch.unique(
-                self.parcels[self.parcels[:, 0] == args.metaparcel_idx],
-                dim=0,
-                return_counts=True,
-            )[1]
-        )
-        self.parcels = self.reformat_parcels(self.parcels, self.parcels)[
-            args.metaparcel_idx
-        ]
+        self.masks = self.padded_parcels != -1
 
         self.num_parcels = len(self.parcels)
 
-        self.mask = self.get_parcel_mask()
+    def plot_parcels(self):
+        if self.overlap:
+            print("Cannot plot overlapping parcels")
+            return
 
-    def reformat_parcels(self, original_parcels, parcels, position=[]):
+        import cortex
+        import cortex.polyutils
+        import contextlib
+        from io import StringIO
+        import sys
+
+        @contextlib.contextmanager
+        def suppress_print():
+            # Redirect stdout to suppress printing
+            original_stdout = sys.stdout
+            sys.stdout = StringIO()
+            try:
+                yield
+            finally:
+                # Restore original stdout after suppression
+                sys.stdout = original_stdout
+
+        def plot_parcels(
+            lh, rh, title="", fig_path=None, cmap="freesurfer_aseg_256", clip=1
+        ):
+            plt.rc("xtick", labelsize=19)
+            plt.rc("ytick", labelsize=19)
+
+            subject = "fsaverage"
+            data = np.append(lh, rh)
+            vertex_data = cortex.Vertex(
+                data, subject, cmap=cmap, vmin=0, vmax=clip
+            )  # "afmhot"
+
+            with suppress_print():
+                cortex.quickshow(vertex_data, with_curvature=True)
+
+            plt.title(title)
+
+            if fig_path is not None:
+                plt.savefig(fig_path, dpi=300)
+            else:
+                plt.show()
+
+        fsavg = np.empty((max([torch.max(p) for p in self.parcels]) + 1))
+        fsavg[:] = np.nan
+
+        for idx, parcel in enumerate(self.parcels):
+            fsavg[parcel.numpy()] = idx
+
+        plot_parcels(
+            fsavg if self.hemi == "lh" else np.full_like(fsavg, np.nan),
+            fsavg if self.hemi == "rh" else np.full_like(fsavg, np.nan),
+            clip=np.nanmax(fsavg),
+        )
+
+    def reformat_parcels(self, parcels, metaparcel_idx):
+        """
+        args:
+        parcels: [[(level1, level2, ...), ...], [(level1, level2, ...), ...], ...]
+
+        returns: [level1: [idx1, idx2, ...], level2: [idx1, idx2, ...], ...]
+        """
+        flattened_parcels = np.array(list(chain.from_iterable(parcels)))
+        print(flattened_parcels)
+        flattened_parcels = torch.from_numpy(flattened_parcels)
+        flattened_parcels = flattened_parcels[flattened_parcels[:, 0] == metaparcel_idx]
+        flattened_parcels = flattened_parcels[:, 1]
+        uq_parcels = torch.unique(flattened_parcels)
+
+        labels = [[] for _ in range(len(uq_parcels))]
+        parcel_to_idx = {p.item(): i for i, p in enumerate(uq_parcels)}
+        for v in range(len(parcels)):
+            for affiliation in parcels[v]:
+                if affiliation[0] != metaparcel_idx:
+                    continue
+                parcel_idx = parcel_to_idx[affiliation[1]]
+                labels[parcel_idx].append(v)
+
+        for i in range(len(labels)):
+            labels[i] = torch.tensor(labels[i])
+
+        return labels
+
+    def reformat_parcels_nonoverlapping(self, original_parcels, parcels, position=[]):
         """
         args:
         parcels: [(level1, level2, ...), (level1, level2, ...), ...]
@@ -78,7 +172,7 @@ class nsd_dataset_tempate(Dataset):
             return t
 
         return [
-            self.reformat_parcels(
+            self.reformat_parcels_nonoverlapping(
                 original_parcels,
                 parcels[torch.where(parcels[:, 0] == p)[0]][:, 1:],
                 [p.item()],
@@ -139,18 +233,6 @@ class nsd_dataset(nsd_dataset_tempate):
             np.isin(self.metadata["img_presentation_order"], self.split_imgs)
         )[0]
 
-        self.preload_data = preload_data
-        if preload_data:
-            self.preloaded_data = torch.empty(
-                (len(self.split_idxs), self.num_parcels, self.max_parcel_size)
-            )
-            for i, idx in enumerate(tqdm(self.split_idxs)):
-                self.preloaded_data[i] = self.parcellate_fmri(
-                    torch.from_numpy(self.betas[idx]),
-                    self.parcels,
-                )
-            del self.betas
-
     def __getitem__(self, idx):
         split_idx = self.split_idxs[idx]
 
@@ -158,13 +240,8 @@ class nsd_dataset(nsd_dataset_tempate):
         img = self.imgs["imgBrick"][img_ind]
         img = self.transform_img(img)
 
-        if hasattr(self, "preloaded_data"):
-            fmri_data = self.preloaded_data[idx]
-        else:
-            fmri_data = self.parcellate_fmri(
-                torch.from_numpy(self.betas[split_idx]),
-                self.parcels,
-            )
+        fmri_data = {}
+        fmri_data["betas"] = self.betas[idx]
 
         return img, fmri_data
 
@@ -191,19 +268,6 @@ class nsd_dataset_avg(nsd_dataset_tempate):
             ]
         )
 
-        if preload_data:
-            self.preloaded_data = torch.empty(
-                (len(self.split_imgs), self.num_parcels, self.max_parcel_size)
-            )
-            for i in tqdm(range(len(self.split_imgs))):
-                data_idxs = self.img_to_runs[i]
-                data = torch.from_numpy(self.betas[data_idxs])
-                data = torch.mean(data, axis=0)
-
-                self.preloaded_data[i] = self.parcellate_fmri(data, self.parcels)
-
-            del self.betas
-
     def __getitem__(self, i):
         img_ind = self.split_imgs[i]  # image index in nsd
         img = self.imgs["imgBrick"][img_ind]
@@ -211,13 +275,12 @@ class nsd_dataset_avg(nsd_dataset_tempate):
         if self.transform is not None:
             img = self.transform_img(img)
 
-        if hasattr(self, "preloaded_data"):
-            fmri_data = self.preloaded_data[i]
-        else:
-            data_idxs = self.img_to_runs[i]
-            data = torch.from_numpy(self.betas[data_idxs])
-            data = torch.mean(data, axis=0)
-            fmri_data = self.parcellate_fmri(data, self.parcels)
+        fmri_data = {}
+        data_idxs = self.img_to_runs[i]
+        data = torch.from_numpy(self.betas[data_idxs])
+        data = torch.mean(data, axis=0)
+        fmri_data["betas"] = data
+        fmri_data["parcels"] = self.padded_parcels
 
         return img, fmri_data
 
@@ -333,14 +396,26 @@ class nsd_dataset_avg_lightweight(Dataset):
 
 
 class algonauts_dataset(Dataset):
-    def __init__(self, args, is_train, imgs_paths, idxs, transform=None):
+    def __init__(
+        self,
+        args,
+        is_train,
+        imgs_paths,
+        idxs,
+        parcel_path,
+        overlap,
+        transform=None,
+    ):
         super(algonauts_dataset, self).__init__()
         self.imgs_paths = np.array(imgs_paths)[idxs]
         self.transform = transform
         self.is_train = is_train
         self.saved_feats = args.saved_feats
-        dino_feat_dir = args.saved_feats_dir + "/dinov2_q_last/" + args.subj
-        clip_feat_dir = args.saved_feats_dir + "/clip_vit_512/" + args.subj
+        self.subj = int(args.subj)
+        dino_feat_dir = (
+            args.saved_feats_dir + "/dinov2_q_last/" + f"{int(args.subj):02}"
+        )
+        clip_feat_dir = args.saved_feats_dir + "/clip_vit_512/" + f"{int(args.subj):02}"
 
         self.backbone_arch = args.backbone_arch
 
@@ -365,6 +440,44 @@ class algonauts_dataset(Dataset):
                 self.clip_subj_test = np.load(clip_feat_dir + "/synt.npy")
 
         self.length = len(idxs)
+
+        self.hemi = args.hemi
+        parcel_path = Path(parcel_path)
+        # self.labels = torch.from_numpy(
+        #     np.load(parcel_path / f"{args.hemi}_labels_s{self.subj:02}.npy")
+        # )
+
+        # self.axis_mask = self.labels[:, 0] == args.metaparcel_idx
+        self.axis_mask = None
+
+        try:
+            self.parcels = np.load(
+                parcel_path / f"{args.hemi}_labels_s{self.subj:02}.npy"
+            )
+        except:
+            self.parcels = np.load(
+                parcel_path / f"{args.hemi}_labels_s{self.subj:02}.npy",
+                allow_pickle=True,
+            )
+
+        self.num_voxels = len(self.parcels)
+
+        if not overlap:
+            self.parcels = torch.from_numpy(self.parcels)
+            self.parcels = self.reformat_parcels_nonoverlapping(
+                self.parcels, self.parcels
+            )[args.metaparcel_idx]
+        else:
+            self.parcels = self.reformat_parcels(self.parcels, args.metaparcel_idx)
+
+        self.max_parcel_size = max([len(p) for p in self.parcels])
+        self.padded_parcels = torch.nn.utils.rnn.pad_sequence(
+            self.parcels, batch_first=True, padding_value=-1
+        )
+        self.masks = self.padded_parcels != -1
+
+        self.num_parcels = len(self.parcels)
+        print("Number of parcels: ", self.num_parcels)
 
     def __getitem__(self, idx):
         if self.is_train == "train":
@@ -415,6 +528,8 @@ class algonauts_dataset(Dataset):
             fmri_data["lh_f"] = [lh_]
             fmri_data["rh_f"] = [rh_]
 
+            fmri_data["betas"] = fmri_data[f"{self.hemi}_f"][0]
+
             return img, fmri_data  # lh_, rh_
 
         elif self.is_train == "test":
@@ -464,9 +579,131 @@ class algonauts_dataset(Dataset):
     def __len__(self):
         return self.length
 
+    def reformat_parcels(self, parcels, metaparcel_idx):
+        """
+        args:
+        parcels: [[(level1, level2, ...), ...], [(level1, level2, ...), ...], ...]
+
+        returns: [level1: [idx1, idx2, ...], level2: [idx1, idx2, ...], ...]
+        """
+        flattened_parcels = np.array(list(chain.from_iterable(parcels)))
+        flattened_parcels = torch.from_numpy(flattened_parcels)
+        flattened_parcels = flattened_parcels[flattened_parcels[:, 0] == metaparcel_idx]
+        flattened_parcels = flattened_parcels[:, 1]
+        uq_parcels = torch.unique(flattened_parcels)
+
+        labels = [[] for _ in range(len(uq_parcels))]
+        parcel_to_idx = {p.item(): i for i, p in enumerate(uq_parcels)}
+        for v in range(len(parcels)):
+            for affiliation in parcels[v]:
+                if affiliation[0] != metaparcel_idx:
+                    continue
+                parcel_idx = parcel_to_idx[affiliation[1]]
+                labels[parcel_idx].append(v)
+
+        for i in range(len(labels)):
+            labels[i] = torch.tensor(labels[i])
+
+        return labels
+
+    def reformat_parcels_nonoverlapping(self, original_parcels, parcels, position=[]):
+        """
+        args:
+        parcels: [(level1, level2, ...), (level1, level2, ...), ...]
+
+        returns: [level1: [idx1, idx2, ...], level2: [idx1, idx2, ...], ...]
+        """
+        if len(parcels[0]) == 1:
+            t = [
+                (original_parcels == torch.tensor(position + [p]))
+                .all(dim=1)
+                .nonzero(as_tuple=True)[0]
+                for p in torch.unique(parcels)
+            ]
+            return t
+
+        return [
+            self.reformat_parcels_nonoverlapping(
+                original_parcels,
+                parcels[torch.where(parcels[:, 0] == p)[0]][:, 1:],
+                [p.item()],
+            )
+            for p in torch.unique(parcels[:, 0])
+        ]
+
+    def plot_parcels(self, cmap="cubehelix"):
+        import cortex
+        import cortex.polyutils
+        import contextlib
+        from io import StringIO
+        import sys
+
+        @contextlib.contextmanager
+        def suppress_print():
+            # Redirect stdout to suppress printing
+            original_stdout = sys.stdout
+            sys.stdout = StringIO()
+            try:
+                yield
+            finally:
+                # Restore original stdout after suppression
+                sys.stdout = original_stdout
+
+        def plot_parcels(
+            lh, rh, title="", fig_path=None, cmap="freesurfer_aseg_256", clip=1
+        ):
+            plt.rc("xtick", labelsize=19)
+            plt.rc("ytick", labelsize=19)
+
+            subject = "fsaverage"
+            data = np.append(lh, rh)
+            vertex_data = cortex.Vertex(
+                data, subject, cmap=cmap, vmin=0, vmax=clip
+            )  # "afmhot"
+
+            with suppress_print():
+                cortex.quickshow(vertex_data, with_curvature=True)
+
+            plt.title(title)
+
+            if fig_path is not None:
+                plt.savefig(fig_path, dpi=300)
+            else:
+                plt.show()
+
+        challenge_data_dir = "/engram/nklab/algonauts/algonauts_2023_challenge_data/"
+
+        mask_dir = os.path.join(
+            challenge_data_dir,
+            "subj" + format(self.subj, "02"),
+            "roi_masks",
+            f"{self.hemi}.all-vertices_fsaverage_space.npy",
+        )
+        fsaverage_all_vertices = np.load(mask_dir)
+        fsavg = np.empty((len(fsaverage_all_vertices)))
+        fsavg[:] = np.nan
+        chall_area = np.zeros_like(np.where(fsaverage_all_vertices)[0])
+
+        for idx, parcel in enumerate(self.parcels):
+            chall_area[parcel.numpy()] = idx
+        fsavg[np.where(fsaverage_all_vertices)[0]] = chall_area
+
+        plot_parcels(
+            fsavg if self.hemi == "lh" else np.full_like(fsavg, np.nan),
+            fsavg if self.hemi == "rh" else np.full_like(fsavg, np.nan),
+            clip=np.nanmax(fsavg),
+            cmap=cmap,
+        )
+
 
 def fetch_dataloaders(
-    args, train="train", shuffle=True, train_val_split="none", download=True
+    args,
+    overlap,
+    parcel_path="/engram/nklab/algonauts/ethan/parcelling/results/algonauts_rois_all",
+    train="train",
+    shuffle=True,
+    train_val_split="none",
+    download=True,
 ):
     """
     load dataset depending on the task
@@ -485,9 +722,6 @@ def fetch_dataloaders(
             'val', load last 10% as val dataset
             'train-val', load 90% train, 10% val dataset
     """
-    kwargs = (
-        {"num_workers": 0, "pin_memory": False} if torch.cuda.is_available() else {}
-    )
 
     transform_train = transforms.Compose(
         [
@@ -545,20 +779,36 @@ def fetch_dataloaders(
         train_imgs_paths = sorted(list(Path(train_img_dir).iterdir()))
 
         # The DataLoaders contain the ImageDataset class
+        train_dataset = algonauts_dataset(
+            args,
+            train,
+            train_imgs_paths,
+            idxs_train,
+            parcel_path,
+            overlap,
+            transform_train,
+        )
+
         train_dataloader = DataLoader(
-            algonauts_dataset(
-                args, train, train_imgs_paths, idxs_train, transform_train
-            ),
+            train_dataset,
             shuffle=shuffle,
             batch_size=args.batch_size,
         )
         val_dataloader = DataLoader(
-            algonauts_dataset(args, train, train_imgs_paths, idxs_val, transform_val),
+            algonauts_dataset(
+                args,
+                train,
+                train_imgs_paths,
+                idxs_val,
+                parcel_path,
+                overlap,
+                transform_val,
+            ),
             batch_size=args.batch_size,
         )
         print("Training stimulus images: " + format(len(idxs_train)))
         print("Validation stimulus images: " + format(len(idxs_val)))
-        return train_dataloader, val_dataloader
+        return train_dataloader, val_dataloader, train_dataset
 
     elif train == "test":
         # test_img_dir  = os.path.join(args.data_dir, 'test_split', 'test_images')
