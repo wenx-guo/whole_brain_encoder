@@ -10,7 +10,7 @@
 #SBATCH --mail-type=ALL
 #SBATCH --output=plot_results_%j.out
 
-cd /engram/nklab/algonauts/ethan/transformer_brain_encoder/
+cd /engram/nklab/algonauts/ethan/whole_brain_encoder/
 source /home/eh2976/.bashrc
 
 conda activate xformers

@@ -19,9 +19,14 @@ class brain_encoder(nn.Module):
 
         ### Brain encoding model
         # if args.encoder_arch == 'transformer':
+
         self.transformer = build_transformer(args)
 
-        self.num_queries = dataset.num_parcels
+        self.num_queries = (
+            sum(dataset.num_parcels)
+            if isinstance(dataset.num_parcels, list)
+            else dataset.num_parcels
+        )
         self.hidden_dim = self.transformer.d_model
         self.linear_feature_dim = self.hidden_dim
 
@@ -34,7 +39,16 @@ class brain_encoder(nn.Module):
         self.query_embed = nn.Embedding(self.num_queries, self.hidden_dim)
 
         ### backbone_arch for feature exraction
-        self.backbone_model = build_backbone(args)
+        if isinstance(args.enc_layers, int) or len(args.enc_layers) == 1:
+            self.single_backbone = True
+            self.backbone_model = build_backbone(args)
+        else:
+            self.single_backbone = False
+            self.backbones = []
+            for enc_layer in [1, 3, 5, 7]:
+                args.enc_layers = enc_layer
+                backbone_model = build_backbone(args).to(args.device)
+                self.backbones.append(backbone_model)
 
         if ("resnet" in self.backbone_arch) and ("transformer" in self.encoder_arch):
             self.input_proj = nn.Conv2d(
@@ -47,20 +61,44 @@ class brain_encoder(nn.Module):
         # linear readout layers to the neural data
         self.readout_res = args.readout_res
 
-        self.max_parcel_size = dataset.max_parcel_size
-        self.num_parcels = dataset.num_parcels
+        # self.max_parcel_size = dataset.max_parcel_size
+        # self.num_parcels = dataset.num_parcels
 
         # this is a mask of shape (num_parcels, num_voxels) where each row is the voxels that belong in a parcel
-        self.parcel_mask = (
-            torch.stack(
-                [
-                    torch.zeros(dataset.num_hemi_voxels).scatter_(0, parcel, 1)
-                    for parcel in dataset.parcels
-                ]
-            )
-            .permute(1, 0)
-            .to(args.device)
+        self.parcel_mask = torch.zeros(dataset.num_hemi_voxels, self.num_queries).to(
+            args.device
         )
+        all_parcels = (
+            dataset.parcels[0] + dataset.parcels[1]
+            if len(dataset.parcels) == 2
+            else dataset.parcels
+        )
+        for i, parcel in enumerate(all_parcels):
+            self.parcel_mask[parcel, i] = 1
+
+        # self.parcel_mask = (
+        #     torch.stack(
+        #         [
+        #             torch.zeros(dataset.num_hemi_voxels).scatter_(0, axis_parcel, 1)
+        #             for axis_parcel in dataset.parcels[0]
+        #         ]
+        #         + [
+        #             torch.zeros(dataset.num_hemi_voxels).scatter_(0, axis_parcel, 1)
+        #             for axis_parcel in dataset.parcels[1]
+        #         ]
+        #     )
+        #     .permute(1, 0)
+        #     .to(args.device)
+        # )
+        # print("self.parcel_mask.shape:", self.parcel_mask.shape)
+        # print("summed parcel mask", self.parcel_mask.sum(dim=1))
+        # print(
+        #     "sum parcel mask equal to ones",
+        #     (
+        #         self.parcel_mask.sum(dim=1)
+        #         == torch.ones_like(self.parcel_mask.sum(dim=1))
+        #     ).all(),
+        # )
 
         # parcel_mask = dataset.masks
         # weights = torch.randn(
@@ -87,26 +125,52 @@ class brain_encoder(nn.Module):
             samples = nested_tensor_from_tensor_list(samples)
         # def forward(self, x):
         # if self.backbone_arch:
-        if self.lr_backbone == 0:
-            with torch.no_grad():
-                features, pos = self.backbone_model(samples)
-        else:
-            features, pos = self.backbone_model(samples)
 
-        input_proj_src, mask = features[-1].decompose()
-        # assert mask is not None
-        pos_embed = pos[-1]
-        _, _, h, w = pos_embed.shape
+        if self.single_backbone:
+            if self.lr_backbone == 0:
+                with torch.no_grad():
+                    features, pos = self.backbone_model(samples)
+            else:
+                features, pos = self.backbone_model(samples)
+
+            input_proj_src, mask = features[-1].decompose()
+            # assert mask is not None
+            pos_embed = pos[-1]
+            _, _, h, w = pos_embed.shape
+        else:
+            features = []
+            pos = []
+            for backbone in self.backbones:
+                with torch.no_grad():
+                    fs, ps = backbone(samples)
+                    features.append(fs)
+                    pos.append(ps)
+
+            input_proj_srcs = []
+            masks = []
+            DIM_TO_CONCAT = 2
+            for feature in features:
+                input_proj_src, mask = feature[-1].decompose()
+                # input_proj_src = input_proj_src.unsqueeze(DIM_TO_CONCAT)
+                # mask = mask.unsqueeze(DIM_TO_CONCAT)
+                input_proj_srcs.append(input_proj_src.flatten(2))
+                masks.append(mask.flatten(2))
+            # print("input_proj_srcs[-1].shape:", input_proj_srcs[-1].shape)
+            # print("masks[-1].shape:", masks[-1].shape)
+            # pos_embeds = [p[-1].unsqueeze(DIM_TO_CONCAT) for p in pos]
+            pos_embeds = [p[-1].flatten(2) for p in pos]
+            input_proj_src = torch.cat(input_proj_srcs, dim=DIM_TO_CONCAT).unsqueeze(-1)
+            mask = torch.cat(masks, dim=DIM_TO_CONCAT).unsqueeze(-1)
+            pos_embed = torch.cat(pos_embeds, dim=DIM_TO_CONCAT).unsqueeze(-1)
+        # print("input_proj_src.shape:", input_proj_src.shape)
+        # print("mask.shape:", mask.shape)
+        # print("pos_embed.shape:", pos_embed.shape)
+        # pos_embed = pos[-1]
+        # _, _, h, w = pos_embed.shape
 
         # if backbone is resnet, apply 1x1 conv to project the feature to the transformer dimension
         # if "resnet" in self.backbone_arch:
         #     input_proj_src = self.input_proj(input_proj_src)
-
-        # print("input_proj_src.shape:", input_proj_src.shape)
-        # print("mask.shape:", mask.shape)
-        # print(mask)
-        # print("pos_embed.shape:", pos_embed.shape)
-
         hs = self.transformer(
             input_proj_src,
             mask,
@@ -130,11 +194,22 @@ class brain_encoder(nn.Module):
         # pred = pred.permute(1, 0, 2)
         # shape = [batch_size, num_parcels, max_parcel_size] like (bs, 500, 2600)
         # pred = pred + self.embed_bias
-
+        # print("output_tokens.shape:", output_tokens.shape)
         pred = self.embed(output_tokens)
+        # print("pred.shape before movedim:", pred.shape)
         pred = torch.movedim(pred, 1, -1)
+        # print("pred.shape before parcel mask applied:", pred.shape)
+        # print("pred before parcel mask applied:", pred)
+        # print("self.parcel_mask:", self.parcel_mask)
         pred = pred * self.parcel_mask
+        # pred = pred[:, :, 0]
+        # print("pred.shape before sum:", pred.shape)
+        # print("pred after parcel mask applied:", pred)
+        # print("first parcel 0", pred[0, 0, :])
+        # print("first parcel 0", pred[0, 0, :][torch.where(pred[0, 0, :] != 0)])
         pred = torch.sum(pred, dim=-1)
+        # print("pred.shape before return:", pred.shape)
+        # print("pred before return:", pred)
 
         # if self.encoder_arch == "transformer":
         #     hs = self.transformer(

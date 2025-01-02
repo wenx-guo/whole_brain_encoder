@@ -1,7 +1,6 @@
 import os
 import argparse
 
-from tqdm import tqdm
 import torch
 import torch.utils.model_zoo
 from torchvision import transforms
@@ -11,15 +10,14 @@ import numpy as np
 from scipy.stats import pearsonr as corr
 
 from models.brain_encoder import brain_encoder
-from engine import evaluate as evaluate
-from engine import train_one_epoch as train_one_epoch
+from engine import evaluate, train_one_epoch
 
 from utils.args import get_args_parser, get_model_dir_args
 import utils.utils as utils
 
 from pathlib import Path
 
-from datasets.nsd import nsd_dataset as nsd_dataset
+from datasets.nsd import nsd_dataset
 from datasets.nsd import nsd_dataset_avg
 
 import wandb
@@ -35,11 +33,6 @@ def main(args):
     args.subject_submission_dir = os.path.join(
         args.parent_submission_dir, "subj" + args.subj
     )
-
-    if args.axis == "posterior":
-        args.metaparcel_idx = 1
-    elif args.axis == "anterior":
-        args.metaparcel_idx = 0
 
     if args.output_path:
         args.save_dir = get_model_dir_args(args)
@@ -70,7 +63,7 @@ def main(args):
 
         wandb.init(
             project=args.wandb_p,
-            name=f"sub{args.subj} {args.hemi} {args.axis} {args.enc_output_layer} {wandb_r} {args.run}",
+            name=f"sub{args.subj} {args.hemi} {args.enc_output_layer} {wandb_r} {args.run}",
             config={
                 "learning_rate": args.lr,
                 "architecture": f"{args.encoder_arch}",
@@ -80,6 +73,8 @@ def main(args):
                 **vars(args),
             },
         )
+        wandb.define_metric("val_perf_avg", summary="max")
+        wandb.define_metric("val_perf_nonavg", summary="max")
 
     transform = transforms.Compose(
         [
@@ -122,9 +117,9 @@ def main(args):
     model = model.cuda()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of model parameters: {num_parameters}")
-    print("linear layer weights shape:", model.embed.shape)
+    # print("linear layer weights shape:", model.embed.shape)
     print(model)
-    model = torch.compile(model)
+    # model = torch.compile(model)
 
     criterion = torch.nn.MSELoss(reduction="sum")
 
@@ -173,7 +168,7 @@ def main(args):
         torch.set_float32_matmul_precision("high")
 
     print("Start training")
-    best_val_perf = {"nonavg": 0, "avg": 0}
+    best_val_perf = {"nonavg": float("-inf"), "avg": float("-inf")}
     for epoch in range(args.start_epoch, args.epochs):
         _ = train_one_epoch(
             args,
@@ -184,6 +179,7 @@ def main(args):
             epoch,
             train_dataset,
             args.clip_max_norm,
+            print_freq=100,
         )
 
         lr_scheduler.step()
@@ -193,30 +189,27 @@ def main(args):
         for dataset_type, dl in zip(["nonavg", "avg"], [val_loader, val_loader_avg]):
             print(f"evaluating {dataset_type} dataset")
 
-            outputs, targets, voxel_mask = evaluate(
+            outputs, targets = evaluate(
                 args,
                 model,
                 criterion,
                 dl,
                 train_dataset,
             )
-            num_valid_voxels = outputs.shape[1]
-            val_correlation = torch.zeros(num_valid_voxels)
-            for v in tqdm(
-                range(num_valid_voxels),
-                desc="Calculating voxel-wise validation correlations",
-                leave=False,
-            ):
+            num_hemi_voxels = train_dataset.num_hemi_voxels
+            val_correlation = torch.zeros(num_hemi_voxels)
+            for v in torch.where(train_dataset.valid_voxel_mask)[0]:
                 val_correlation[v] = corr(outputs[:, v].cpu(), targets[:, v].cpu())[0]
 
-            val_perf[dataset_type] = val_correlation[voxel_mask].mean().item()
+            print("val_correlation", val_correlation)
+            val_perf[dataset_type] = (
+                val_correlation[train_dataset.valid_voxel_mask].mean().item()
+            )
 
-            print(f"{dataset_type} val_perf:", val_perf[dataset_type])
-
-            if args.wandb_p:
-                wandb.log(
-                    {f"val_perf_{dataset_type}": val_perf[dataset_type], "epoch": epoch}
-                )
+            print(
+                f"{dataset_type} val_perf:",
+                val_perf[dataset_type],
+            )
 
             if args.output_path:
                 # update best validation acc and save best model to output dir
@@ -255,6 +248,14 @@ def main(args):
                         args.save_dir / f"{args.hemi}_val_corr_{dataset_type}.npy",
                         val_correlation.numpy(),
                     )
+
+            if args.wandb_p:
+                wandb.log(
+                    {
+                        f"val_perf_{dataset_type}": val_perf[dataset_type],
+                        "epoch": epoch,
+                    }
+                )
 
     wandb.finish()
 

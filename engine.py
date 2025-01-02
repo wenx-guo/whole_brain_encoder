@@ -21,9 +21,9 @@ def train_one_epoch(
     epoch: int,
     dataset,
     max_norm: float = 0,
+    print_freq=10,
 ):
     model.train()
-    print_freq = 10
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter(
         "lr", utils.SmoothedValue(window_size=print_freq, fmt="{value:.6f}")
@@ -33,10 +33,10 @@ def train_one_epoch(
     )  # , fmt='{value:.2f}'
     header = "Epoch: [{}]".format(epoch)
 
-    masks = dataset.masks
-    num_valid_voxels = masks.sum()
-    masks = masks.to(args.device, non_blocking=True)
-    parcels = dataset.padded_parcels.to(args.device, non_blocking=True)
+    # masks = dataset.masks
+    # num_valid_voxels = masks.sum()
+    # masks = masks.to(args.device, non_blocking=True)
+    # parcels = dataset.padded_parcels.to(args.device, non_blocking=True)
 
     running_loss = 0
 
@@ -57,7 +57,7 @@ def train_one_epoch(
         #     outputs.flatten(start_dim=1)[:, masks.flatten()],
         # )
         # loss = criterion(outputs_recon, target_betas) / num_valid_voxels
-        loss = criterion(outputs, target_betas) / num_valid_voxels
+        loss = criterion(outputs, target_betas) / dataset.num_hemi_voxels
 
         loss_value = loss.item()
 
@@ -83,7 +83,7 @@ def train_one_epoch(
             wandb.log(
                 {
                     "Training Loss": running_loss / print_freq,
-                    "Epoch": epoch,
+                    "epoch": epoch,
                     # "Training Corr": running_corr / print_freq,
                     "Batch": batch_idx + epoch * len(data_loader),
                 }
@@ -115,10 +115,10 @@ def evaluate(args, model, criterion, data_loader, dataset, print_freq=25):
     )  # , fmt='{value:.2f}'
     header = "Test:"
 
-    masks = dataset.masks
-    num_valid_voxels = masks.sum()
-    masks = masks.to(args.device, non_blocking=True)
-    parcels = dataset.padded_parcels.to(args.device, non_blocking=True)
+    # masks = dataset.masks
+    # num_valid_voxels = masks.sum()
+    # masks = masks.to(args.device, non_blocking=True)
+    # parcels = dataset.padded_parcels.to(args.device, non_blocking=True)
 
     ys = []
     preds = []
@@ -140,12 +140,12 @@ def evaluate(args, model, criterion, data_loader, dataset, print_freq=25):
         # )
 
         if criterion is not None:
-            loss = criterion(outputs, target_betas) / num_valid_voxels
+            loss = criterion(outputs, target_betas) / dataset.num_hemi_voxels
         else:
             loss = torch.tensor(0)
 
-        ys.append(target_betas)
-        preds.append(outputs)
+        ys.append(target_betas.cpu())
+        preds.append(outputs.cpu())
 
         loss_value = loss.item()
         metric_logger.update(loss_labels=loss_value)
@@ -156,7 +156,7 @@ def evaluate(args, model, criterion, data_loader, dataset, print_freq=25):
     outputs = torch.cat(preds, dim=0)
     targets = torch.cat(ys, dim=0)
 
-    return outputs, targets, dataset.axis_mask
+    return outputs, targets
 
 
 @torch.no_grad()

@@ -56,6 +56,11 @@ class nsd_dataset_tempate(Dataset):
             parcel_path / f"{args.hemi}_labels_s{self.subj:02}.pt", weights_only=True
         )
 
+        # we are only interested in evaluating on these voxels
+        self.valid_voxel_mask = torch.zeros(self.num_hemi_voxels, dtype=torch.bool)
+        for parcel in self.parcels:
+            self.valid_voxel_mask[parcel] = True
+
         self.num_parcels = len(self.parcels)
         print("Number of parcels: ", self.num_parcels)
 
@@ -247,15 +252,17 @@ class nsd_dataset_avg(nsd_dataset_tempate):
             "val",
         ], "split must be either train, test or val"
 
-        self.img_to_runs = np.array(
-            [
-                np.where(self.metadata["img_presentation_order"] == img_ind)[0]
-                for img_ind in self.split_imgs
-            ]
-        )
+        # some of the images in split_imgs are were not actually presented, so let's take them out
+        self.split_presented_imgs = self.split_imgs[
+            np.isin(self.split_imgs, self.metadata["img_presentation_order"])
+        ]
+        self.img_to_runs = [
+            np.where(self.metadata["img_presentation_order"] == img_ind)[0]
+            for img_ind in self.split_presented_imgs
+        ]
 
     def __getitem__(self, i):
-        img_ind = self.split_imgs[i]  # image index in nsd
+        img_ind = self.split_presented_imgs[i]  # image index in nsd
         img = self.imgs["imgBrick"][img_ind]
 
         if self.transform is not None:
@@ -266,12 +273,11 @@ class nsd_dataset_avg(nsd_dataset_tempate):
         data = torch.from_numpy(self.betas[data_idxs])
         data = torch.mean(data, axis=0)
         fmri_data["betas"] = data
-        # fmri_data["parcels"] = self.padded_parcels
 
         return img, fmri_data
 
     def __len__(self):
-        return len(self.split_imgs)
+        return len(self.split_presented_imgs)
 
 
 class nsd_dataset_custom(nsd_dataset_tempate):
@@ -293,7 +299,7 @@ class nsd_dataset_custom(nsd_dataset_tempate):
         img = self.img_data[idx]
         img = self.transform_img(img)
 
-        return img, torch.empty((self.num_parcels, self.max_parcel_size))
+        return img, {"betas": torch.empty((self.num_hemi_voxels))}
 
     def __len__(self):
         return len(self.img_data)

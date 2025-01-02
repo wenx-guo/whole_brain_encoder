@@ -60,17 +60,19 @@ def plot_run_results(args, avg_or_nonavg):
     for hemi in ["lh", "rh"]:
         val_correlation = np.zeros(163842)
 
-        for axis in ["posterior", "anterior"]:
-            args.hemi = hemi
-            args.axis = axis
-            model_dir = Path(get_model_dir_args(args))
+        # for axis in ["posterior", "anterior"]:
+        #     if axis == "posterior":
+        #         midx = 0
+        #     else:
+        #         midx = 1
+        args.hemi = hemi
+        args.axis = "anterior"
+        model_dir = Path(get_model_dir_args(args))
 
-            val_corr = np.load(
-                model_dir / f"{hemi}_{args.split}_corr_{avg_or_nonavg}.npy"
-            )
-            val_corr = np.nan_to_num(val_corr)
+        val_corr = np.load(model_dir / f"{hemi}_val_corr_{avg_or_nonavg}.npy")
+        val_corr = np.nan_to_num(val_corr)
 
-            val_correlation += val_corr
+        val_correlation += val_corr
 
         val_correlations[hemi] = val_correlation
 
@@ -108,6 +110,7 @@ def plot_roi_correlation(
     metadata = np.load(
         neural_data_path / f"metadata_sub-{int(subj):02}.npy", allow_pickle=True
     ).item()
+    print(metadata.keys())
 
     roi_corr = {"lh": {}, "rh": {}}
     for hemi in ["lh", "rh"]:
@@ -118,7 +121,16 @@ def plot_roi_correlation(
         )
         for roi, vertices in metadata[f"{hemi}_rois"].items():
             roi_corr[hemi][roi] = val_correlations[hemi][vertices].mean()
-            challenge_cover |= vertices
+            if roi not in [
+                "early",
+                "midventral",
+                "midlateral",
+                "midparietal",
+                "ventral",
+                "lateral",
+                "parietal",
+            ]:
+                challenge_cover |= vertices
         roi_corr[hemi]["All vertices"] = val_correlations[hemi][challenge_cover].mean()
 
     x = np.arange(len((roi_corr["lh"].keys())))
@@ -153,24 +165,47 @@ def plot_roi_correlation(
     plt.title(plt_title)
     plt.savefig(save_dir / f"{split}_roi_correlation_{avg_or_nonavg}.jpg", dpi=300)
 
+    # for hemi in ["lh", "rh"]:
+    # rois_save_dir = save_dir / "rois"
+    # rois_save_dir.mkdir(exist_ok=True)
+    # for roi, vertices in metadata[f"{hemi}_rois"].items():
+    # mask = np.zeros(163842)
+    # mask[vertices] = 1
+    # plot_parcels(
+    #     mask,
+    #     np.zeros(163842),
+    #     title=roi,
+    #     fig_path=rois_save_dir / f"lh_{roi}",
+    # )
+
+    # plot_parcels(
+    #     challenge_cover,
+    #     np.zeros(163842),
+    #     title=roi,
+    #     fig_path=rois_save_dir / f"lh_challenge_cover",
+    # )
+
 
 def main():
     parser = argparse.ArgumentParser(
         "model training and evaluation script", parents=[get_args_parser()]
     )
-    parser.add_argument("--ensemble", type=bool, default=False)
-    parser.add_argument("--ensemble_dir", type=str, default="enc_1_5_run_1_5")
     parser.add_argument("--split", type=str, default="val")
+
+    # below args required if ensemble: ensemble, ensemble_dir, subj
+    parser.add_argument("--ensemble", type=bool, default=False)
+    parser.add_argument("--ensemble_dir", type=str, default="enc_1_3_5_7_run_1_2")
     args = parser.parse_args()
 
     if args.ensemble:
         results_dir = (
-            Path("/engram/nklab/algonauts/ethan/transformer_brain_encoder/results")
+            Path("/engram/nklab/algonauts/ethan/whole_brain_encoder/results")
             / args.ensemble_dir
+            / f"subj_{args.subj:02}"
         )
-        val_correlations = {}
-        val_correlations["lh"] = np.load(results_dir / f"lh_{args.split}_corr_avg.npy")
-        val_correlations["rh"] = np.load(results_dir / f"rh_{args.split}_corr_avg.npy")
+        val_correlations = np.load(
+            results_dir / f"{args.split}_corr_avg.npy", allow_pickle=True
+        ).item()
 
         for clip_value in [0.3, 1]:
             plot_parcels(

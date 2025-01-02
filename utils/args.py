@@ -8,7 +8,7 @@ def get_args_parser():
     parser.add_argument("--resume", default=None, help="resume from checkpoint")
     parser.add_argument(
         "--output_path",
-        default="/engram/nklab/algonauts/ethan/transformer_brain_encoder/checkpoints",
+        default="/engram/nklab/algonauts/ethan/whole_brain_encoder/checkpoints",
         type=str,
         help="if not none, then store the model resuls",
     )
@@ -166,7 +166,7 @@ def get_args_parser():
         "--num_workers", default=4, type=int, help="number of data loading num_workers"
     )
     parser.add_argument(
-        "--epochs", default=30, type=int, help="number of total epochs to run"
+        "--epochs", default=20, type=int, help="number of total epochs to run"
     )
     parser.add_argument("--batch_size", default=16, type=int, help="mini-batch size")
     parser.add_argument(
@@ -239,12 +239,11 @@ def get_model_dir_args(
         args.enc_output_layer,
         args.run,
         args.hemi,
-        args.axis,
     )
 
 
 def get_model_dir(
-    output_path, backbone_arch, encoder_arch, subj, enc_output_layer, run, hemi, axis
+    output_path, backbone_arch, encoder_arch, subj, enc_output_layer, run, hemi
 ):
     p = (
         Path(output_path)
@@ -252,7 +251,7 @@ def get_model_dir(
         / f"subj_{int(subj):02}"
         / f"enc_{enc_output_layer}"
         / f"run_{run}"
-        / f"{hemi}_{axis}"
+        / hemi
     )
 
     return p

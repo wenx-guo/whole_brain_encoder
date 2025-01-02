@@ -5,25 +5,28 @@ from torchvision import transforms
 from models.brain_encoder import brain_encoder
 
 # from datasets.nsd_utils import roi_maps, roi_masks
-from datasets.nsd import nsd_dataset_custom
+from datasets.nsd import nsd_dataset_custom, nsd_dataset_avg
 from engine import evaluate
 import numpy as np
 from scipy.special import softmax
 from utils.args import get_model_dir, get_args_parser
-from pathlib import Path
+from pathlib import Path, PosixPath
 import argparse
 import copy
 from tqdm import tqdm
+from utils.args import get_default_args
+from scipy.stats import pearsonr as corr
 
 
+# argparser needs: subj
 class BrainEncoderWrapper:
     def __init__(
         self,
         subj=1,
         backbone_arch="dinov2_q",
         encoder_arch="transformer",
-        enc_output_layer=[1],
-        runs=[1],
+        enc_output_layer=[1, 3, 5, 7],
+        runs=[1, 2],
         results_dir=None,
     ):
         parser = get_args_parser()
@@ -35,7 +38,8 @@ class BrainEncoderWrapper:
         args = argparse.Namespace(**default_args)
 
         self.enc_output_layer = enc_output_layer  # 1
-        self.subj = format(subj, "02")
+        self.runs = runs
+        self.subj = subj
 
         self.metadata = np.load(
             Path(args.data_dir) / f"metadata_sub-{self.subj:02}.npy", allow_pickle=True
@@ -56,7 +60,7 @@ class BrainEncoderWrapper:
 
         if results_dir is None:
             self.results_dir = Path(
-                "/engram/nklab/algonauts/ethan/transformer_brain_encoder/results"
+                "/engram/nklab/algonauts/ethan/whole_brain_encoder/results"
             )
 
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -77,61 +81,65 @@ class BrainEncoderWrapper:
         # )
 
         self.model_paths = {
-            "lh": {"anterior": [], "posterior": []},
-            "rh": {"anterior": [], "posterior": []},
+            "lh": [],
+            "rh": [],
         }
         for hemi in ["lh", "rh"]:
-            for axis in ["anterior", "posterior"]:
-                for r in runs:
-                    for layer_num in self.enc_output_layer:
-                        model_path = get_model_dir(
-                            args.output_path,
-                            backbone_arch,
-                            encoder_arch,
-                            self.subj,
-                            layer_num,
-                            r,
-                            hemi,
-                            axis,
-                        )
-                        if self.is_valid_model(model_path, hemi):
-                            self.model_paths[hemi][axis].append(model_path)
+            for r in runs:
+                for layer_num in self.enc_output_layer:
+                    model_path = get_model_dir(
+                        args.output_path,
+                        backbone_arch,
+                        encoder_arch,
+                        self.subj,
+                        layer_num,
+                        r,
+                        hemi,
+                    )
+                    if self.is_valid_model(model_path, hemi):
+                        self.model_paths[hemi].append(model_path)
 
-                        else:
-                            print(f"WARNING: Model path {model_path} is not valid")
+                    else:
+                        print(f"WARNING: Model path {model_path} is not valid")
 
-                assert self.model_paths[hemi], f"No valid models found for {hemi}"
-                assert self.model_paths[hemi][
-                    axis
-                ], f"No valid models found for {hemi} {axis}"
+            assert self.model_paths[hemi], f"No valid models found for {hemi}"
 
-                print(
-                    f"Found {len(self.model_paths[hemi][axis])} valid models for {hemi} {axis}"
-                )
+            print(f"Found {len(self.model_paths[hemi])} valid models for {hemi}")
 
         ## TODO what is the best way to load multiple models?
         val_correlation = {
-            "lh": np.zeros((len(self.model_paths[hemi][axis]), self.num_voxels)),
-            "rh": np.zeros((len(self.model_paths[hemi][axis]), self.num_voxels)),
+            "lh": np.zeros((len(self.model_paths[hemi]), self.num_voxels)),
+            "rh": np.zeros((len(self.model_paths[hemi]), self.num_voxels)),
         }
         self.corr_sm = copy.deepcopy(val_correlation)
         for hemi in ["lh", "rh"]:
-            for axis in ["anterior", "posterior"]:
-                for idx, model_path in enumerate(self.model_paths[hemi][axis]):
-                    region_val_corr = np.load(
-                        model_path / f"{hemi}_val_corr_nonavg.npy"
-                    )
-                    region_val_corr = np.nan_to_num(region_val_corr)
-                    val_correlation[hemi][idx] += region_val_corr
+            for idx, model_path in enumerate(self.model_paths[hemi]):
+                region_val_corr = np.load(model_path / f"{hemi}_val_corr_nonavg.npy")
+                region_val_corr = np.nan_to_num(region_val_corr)
+                val_correlation[hemi][idx] += region_val_corr
 
             self.corr_sm[hemi] = torch.from_numpy(
                 softmax(20 * val_correlation[hemi], axis=0)
             )
 
+        print(
+            "max lh corr",
+            val_correlation["lh"].mean(axis=1).max(),
+            "min",
+            val_correlation["lh"].mean(axis=1).min(),
+        )
+        print(
+            "max rh corr",
+            val_correlation["rh"].mean(axis=1).max(),
+            "min",
+            val_correlation["rh"].mean(axis=1).min(),
+        )
+
     def is_valid_model(self, model_path, hemi):
         paths = [
             model_path,
             model_path / "checkpoint_nonavg.pth",
+            model_path / "checkpoint_avg.pth",
             model_path / f"{hemi}_val_corr_nonavg.npy",
             model_path / f"{hemi}_val_corr_avg.npy",
         ]
@@ -148,7 +156,7 @@ class BrainEncoderWrapper:
         device="cpu",
     ):
         checkpoint = torch.load(
-            model_path / "checkpoint_nonavg.pth", map_location="cpu"
+            model_path / "checkpoint_nonavg.pth", map_location="cpu", weights_only=True
         )
 
         pretrained_dict = checkpoint["model"]
@@ -158,14 +166,15 @@ class BrainEncoderWrapper:
 
         model = brain_encoder(args, dataset)
 
-        checkpoint = torch.load(
-            model_path / "checkpoint_nonavg.pth", map_location="cpu", weights_only=False
-        )
+        if len([k for k in pretrained_dict.keys() if ".orig_mod" in k]) > 0:
+            raise ValueError(
+                "Model has nonmatching keys with .orig_mod, should manually inspect"
+            )
+
         checkpoint["model"] = {
             key.replace("_orig_mod.", ""): value
             for key, value in checkpoint["model"].items()
         }
-        pretrained_dict = checkpoint["model"]
         model.load_state_dict(pretrained_dict)
 
         model = model.to(device)
@@ -241,20 +250,19 @@ class BrainEncoderWrapper:
 
         for hemi in ["lh", "rh"]:
             hemi_preds = torch.zeros(
-                len(images), len(self.model_paths[hemi]["anterior"]), self.num_voxels
+                len(images), len(self.model_paths[hemi]), self.num_voxels
             )
-            for axis in ["anterior", "posterior"]:
-                model_paths = self.model_paths[hemi][axis]
+            model_paths = self.model_paths[hemi]
 
-                for idx, model_path in enumerate(
-                    tqdm(
-                        model_paths,
-                        desc=f"Running inference on {hemi} {axis} models",
-                    )
-                ):
-                    preds = self.forward_region(model_path, images)
-                    preds = torch.nan_to_num(preds)
-                    hemi_preds[:, idx, :] += preds
+            for idx, model_path in enumerate(
+                tqdm(
+                    model_paths,
+                    desc=f"Running inference on {hemi} models",
+                )
+            ):
+                preds = self.forward_region(model_path, images)
+                preds = torch.nan_to_num(preds)
+                hemi_preds[:, idx, :] += preds
 
             # coor_sm has shape (num_models, num_vertices)
             # corr_sm = (
@@ -285,8 +293,85 @@ class BrainEncoderWrapper:
         )
 
         criterion = None
-        output, _, _ = evaluate(
-            args, model, criterion, imgs_loader, imgs_dataset, print_freq=1000
+        output, _ = evaluate(
+            args, model, criterion, imgs_loader, imgs_dataset, print_freq=10
         )
 
         return output
+
+
+transform = transforms.Compose(
+    [
+        transforms.ToTensor(),  # convert the images to a PyTorch tensor
+        transforms.Normalize(
+            [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+        ),  # normalize the images color channels
+    ]
+)
+
+
+def main():
+    torch.torch.serialization.add_safe_globals([argparse.Namespace, PosixPath])
+
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument("--subj", type=int, default=1)
+    input_args = argparser.parse_args()
+
+    model = BrainEncoderWrapper(
+        subj=input_args.subj, enc_output_layer=[1, 3, 5, 7], runs=[1, 2]
+    )
+
+    save_dir = (
+        Path(model.results_dir)
+        / f"enc_{'_'.join([str(s) for s in model.enc_output_layer])}_run_{'_'.join([str(s) for s in model.runs])}"
+        / f"subj_{input_args.subj:02}"
+    )
+
+    print(f"Saving results to {save_dir}")
+
+    args = get_default_args()
+    args.subj = input_args.subj
+    args.metaparcel_idx = 0
+    val_dataset = nsd_dataset_avg(args, transform=None, split="test")
+    imgs_data = []
+    for img, _ in val_dataset:
+        imgs_data.append(img)
+    imgs_data = np.stack(imgs_data)
+
+    out = model.forward(imgs_data)
+
+    split = "test"
+    save_dir.mkdir(exist_ok=True, parents=True)
+    val_correlation = {}
+    for hemi in ["lh", "rh"]:
+        args.metaparcel_idx = 0
+        args.hemi = hemi
+        val_dataset = nsd_dataset_avg(args, transform=None, split=split)
+
+        data_idxs = [val_dataset.img_to_runs[i] for i in range(len(val_dataset))]
+        data = [
+            torch.from_numpy(val_dataset.betas[idxs]).mean(axis=0) for idxs in data_idxs
+        ]
+        ys = torch.stack(data)
+
+        num_valid_voxels = ys.shape[1]
+        val_correlation[hemi] = torch.zeros(num_valid_voxels)
+        for v in range(num_valid_voxels):
+            val_correlation[hemi][v] = corr(ys[:, v].cpu(), out[hemi][:, v].cpu())[0]
+
+        val_correlation[hemi] = val_correlation[hemi].numpy()
+
+        print(f"Validation correlation for {hemi} hemi: {val_correlation[hemi].mean()}")
+        # np.save(save_dir / f"{hemi}_{split}_corr_avg.npy", val_correlation[hemi])
+
+        with (save_dir / f"{split}_corr_avg.txt").open("a") as f:
+            f.write(
+                f"Validation correlation for {split} split: {val_correlation[hemi].mean()}\n"
+            )
+
+    # val_correlation = {k: v.cpu().numpy() for k, v in val_correlation.items()}
+    np.save(save_dir / f"{split}_corr_avg.npy", val_correlation)
+
+
+if __name__ == "__main__":
+    main()
