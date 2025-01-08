@@ -4,17 +4,15 @@ from torchvision import transforms
 # from models.activations import get_transformer_activations
 from models.brain_encoder import brain_encoder
 
-# from datasets.nsd_utils import roi_maps, roi_masks
 from datasets.nsd import nsd_dataset_custom, nsd_dataset_avg
 from engine import evaluate
 import numpy as np
 from scipy.special import softmax
-from utils.args import get_model_dir, get_args_parser
+from utils.args import get_model_dir, get_args_parser, get_default_args
 from pathlib import Path, PosixPath
 import argparse
 import copy
 from tqdm import tqdm
-from utils.args import get_default_args
 from scipy.stats import pearsonr as corr
 
 
@@ -29,6 +27,7 @@ class BrainEncoderWrapper:
         runs=[1, 2],
         results_dir=None,
     ):
+        torch.serialization.add_safe_globals([argparse.Namespace, PosixPath])
         parser = get_args_parser()
         default_args = {
             action.dest: action.default
@@ -37,9 +36,11 @@ class BrainEncoderWrapper:
         }
         args = argparse.Namespace(**default_args)
 
-        self.enc_output_layer = enc_output_layer  # 1
+        self.enc_output_layer = enc_output_layer
         self.runs = runs
         self.subj = subj
+        self.results_dir = results_dir
+        self.default_args = args
 
         self.metadata = np.load(
             Path(args.data_dir) / f"metadata_sub-{self.subj:02}.npy", allow_pickle=True
@@ -51,34 +52,12 @@ class BrainEncoderWrapper:
 
         self.transform = transforms.Compose(
             [
-                transforms.ToTensor(),  # convert the images to a PyTorch tensor
-                transforms.Normalize(
-                    [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
-                ),  # normalize the images color channels
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ]
         )
 
-        if results_dir is None:
-            self.results_dir = Path(
-                "/engram/nklab/algonauts/ethan/whole_brain_encoder/results"
-            )
-
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
-
-        # data_dir = "/engram/nklab/algonauts/algonauts_2023_challenge_data/"
-        # self.data_dir = os.path.join(data_dir, "subj" + self.subj)
-        # /engram/nklab/hossein/recurrent_models/transformer_brain_encoder/results/
-
-        # roi_name_maps, lh_challenge_rois, rh_challenge_rois = roi_maps(self.data_dir)
-        # (
-        #     self.lh_challenge_rois,
-        #     self.rh_challenge_rois,
-        #     self.lh_roi_names,
-        #     self.rh_roi_names,
-        #     num_queries,
-        # ) = roi_masks(
-        #     self.readout_res, roi_name_maps, lh_challenge_rois, rh_challenge_rois
-        # )
 
         self.model_paths = {
             "lh": [],
@@ -139,9 +118,7 @@ class BrainEncoderWrapper:
         paths = [
             model_path,
             model_path / "checkpoint_nonavg.pth",
-            model_path / "checkpoint_avg.pth",
             model_path / f"{hemi}_val_corr_nonavg.npy",
-            model_path / f"{hemi}_val_corr_avg.npy",
         ]
         for p in paths:
             if not p.exists():
@@ -161,6 +138,10 @@ class BrainEncoderWrapper:
 
         pretrained_dict = checkpoint["model"]
         args = checkpoint["args"]
+        args.data_dir = self.default_args.data_dir
+        args.imgs_dir = self.default_args.imgs_dir
+        args.parcel_dir = self.default_args.parcel_dir
+        args.data_dir = self.default_args.data_dir
 
         dataset = nsd_dataset_custom(images, args, transform=self.transform)
 
@@ -175,7 +156,7 @@ class BrainEncoderWrapper:
             key.replace("_orig_mod.", ""): value
             for key, value in checkpoint["model"].items()
         }
-        model.load_state_dict(pretrained_dict)
+        model.load_state_dict(pretrained_dict, strict=False)
 
         model = model.to(device)
         model.eval()
@@ -264,14 +245,6 @@ class BrainEncoderWrapper:
                 preds = torch.nan_to_num(preds)
                 hemi_preds[:, idx, :] += preds
 
-            # coor_sm has shape (num_models, num_vertices)
-            # corr_sm = (
-            #     self.corr_sm[hemi]
-            #     .unsqueeze(1)
-            #     .expand(-1, hemi_preds.size(1), -1)
-            #     .to("cpu")
-            # )
-            # print("corr_sm", corr_sm.shape)
             pred[hemi] = (
                 self.corr_sm[hemi].to(self.device) * hemi_preds.to(self.device)
             ).sum(1)
@@ -302,23 +275,29 @@ class BrainEncoderWrapper:
 
 transform = transforms.Compose(
     [
-        transforms.ToTensor(),  # convert the images to a PyTorch tensor
-        transforms.Normalize(
-            [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
-        ),  # normalize the images color channels
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ]
 )
 
 
 def main():
-    torch.torch.serialization.add_safe_globals([argparse.Namespace, PosixPath])
+    torch.serialization.add_safe_globals([argparse.Namespace, PosixPath])
 
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--subj", type=int, default=1)
+    argparser.add_argument(
+        "--results_dir",
+        type=str,
+        default="/engram/nklab/algonauts/ethan/whole_brain_encoder/results",
+    )
     input_args = argparser.parse_args()
 
     model = BrainEncoderWrapper(
-        subj=input_args.subj, enc_output_layer=[1, 3, 5, 7], runs=[1, 2]
+        subj=input_args.subj,
+        enc_output_layer=[1, 3, 5, 7],
+        runs=[1, 2],
+        results_dir=input_args.results_dir,
     )
 
     save_dir = (
@@ -362,14 +341,12 @@ def main():
         val_correlation[hemi] = val_correlation[hemi].numpy()
 
         print(f"Validation correlation for {hemi} hemi: {val_correlation[hemi].mean()}")
-        # np.save(save_dir / f"{hemi}_{split}_corr_avg.npy", val_correlation[hemi])
 
         with (save_dir / f"{split}_corr_avg.txt").open("a") as f:
             f.write(
                 f"Validation correlation for {split} split: {val_correlation[hemi].mean()}\n"
             )
 
-    # val_correlation = {k: v.cpu().numpy() for k, v in val_correlation.items()}
     np.save(save_dir / f"{split}_corr_avg.npy", val_correlation)
 
 

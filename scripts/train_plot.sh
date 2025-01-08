@@ -11,7 +11,6 @@ for layer in "${enc_output_layers[@]}"; do
     batch_size_flag="--batch_size 16"
     enc_output_layer_flag="--enc_output_layer $layer"
     run_flag="--run $SLURM_JOB_ID"
-    # parcel_dir_flag="--parcel_dir /engram/nklab/algonauts/ethan/parcelling/results/named_rois"
 
     common_flags="$lr_flag $subj_flag $enc_output_layer_flag $run_flag $batch_size_flag"
 
