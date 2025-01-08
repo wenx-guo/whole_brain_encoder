@@ -14,26 +14,26 @@ In `utils/args.py`, modify the following paths in the default arguments:
 Environment for model training and inference
 
 ```bash
-conda env create -f xformers.yml
+conda env create -f env/xformers.yml
 ```
 
 Environment for pycortex plotting
 
 ```bash
-conda env create -f pycortex.yml
+conda env create -f env/pycortex.yml
 ```
 
 Environment for running the parcellation algorithm
 
 ```bash
-conda env create -f parcel.yml
+conda env create -f env/parcel.yml
 ```
 
 # Run inference on your images
 
 Download the model weights and brain parcels from https://huggingface.co/ehwang/brain_encoder_weights/tree/main, or follow the training instructions below in [Model training](#model-training).
 
-Follow the example in `test_wrapper.ipynb`
+Follow the example in `tutorials/test_wrapper.ipynb`
 
 # Plot ensemble results
 
