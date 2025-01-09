@@ -78,6 +78,8 @@ python generate_parcels.py --subj $SUBJECT --hemi $HEMI --save_dir /path/to/save
 
 ## Model training
 
+Set up the [conda environment for model training and inference](#conda-environment-for-model-training-and-inference).
+
 If you're using slurm, see `scripts/train_plot` for a bash script to reproduce the checkpoint files.
 
 Otherwise, to train a single model, run:
