@@ -41,16 +41,22 @@ Follow the example in `tutorials/test_wrapper.ipynb`
 # Plot ensemble results
 
 ```bash
+conda activate pycortex
 python plot_run_results.py --ensemble 1 --subj $SUBJECT --split $SPLIT
 ```
 
-valid splits include `train`, `val`, and `test`
+The following directory structure is expected: `results/enc_{"_".join(enc_layers)}_run_{"_".join(run_nums)}/subj_{subj_num:02}/{hemi}_test_corr_avg.npy`, for both hemispheres lh and rh. For example, `results/enc_1_3_5_7_run_1_2/subj_01/lh_test_corr_avg.npy`. Plots for the correlation across all voxels and correlation for known ROIs will be saved in the same directory.
+
+Valid splits include `train`, `val`, and `test`
 
 # Plot results for a run
 
 ```bash
+conda activate pycortex
 python plot_run_results.py --subj $SUBJECT --enc_output_layer $layer --run $RUN_ID
 ```
+
+The directory structure described in [Downloading weights](#downloading-weights) is expected. Plots for the correlation across all voxels and a graph showing correlation for known ROIs will be saved in the `run_{run_num}` directory.
 
 # Reproducing the checkpoints
 
@@ -77,6 +83,7 @@ If you're using slurm, see `scripts/train_plot` for a bash script to reproduce t
 Otherwise, to train a single model, run:
 
 ```bash
+conda activate xformers
 python main.py --subj $SUBJECT --enc_output_layer $layer --run $RUN_ID --hemi $HEMI
 ```
 
