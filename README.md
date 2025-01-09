@@ -1,16 +1,22 @@
 # whole_brain_encoder
 
-# Required setup
+# Run inference on your images using the ensemble model
 
-In `utils/args.py`, modify the following paths in the default arguments:
-
-1. `--output_path`: use the path to downloaded weights or folder where weights were saved after training
-1. `--data_dir`: directory containing metadata and neural data files
-1. `--imgs_dir`: directory containing NSD image data
+The ensemble model is a combination of many individual models, each trained on a particular subject, encoder layer, and hemisphere. It uses the validation split to generate a model confidence value for each voxel, so it should be evaluated on the test split or unseen data.
 
 ## Environment setup
 
-Environment for model training and inference
+### Downloading weights
+
+In `utils/args.py`, set the default argument `--output_path` to point to downloaded weights or folder where weights were saved after training. Download the model weights from https://huggingface.co/ehwang/brain_encoder_weights/tree/main by cloning the repo like [this](https://huggingface.co/ehwang/brain_encoder_weights/tree/main?clone=true), or follow the training instructions below in [Reproducing the checkpoints](#reproducing-the-checkpoints). This should point to the `checkpoints/` folder.
+
+The expected directory structure is: `checkpoints/nsd_test/dinov2_q_transformer/subj_{subj_num:02}/enc_{enc_layer}/run_{run_num}/{hemi}`.
+
+### Conda environment for model training and inference
+
+Environments for running the model, plotting, and parcellation algorithm are provided in the `env/` folder. To create the environments, run the following commands:
+
+Environment for inference and training
 
 ```bash
 conda env create -f env/xformers.yml
@@ -28,9 +34,7 @@ Environment for running the parcellation algorithm
 conda env create -f env/parcel.yml
 ```
 
-# Run inference on your images
-
-Download the model weights and brain parcels from https://huggingface.co/ehwang/brain_encoder_weights/tree/main, or follow the training instructions below in [Reproducing the checkpoints](#reproducing-the-checkpoints).
+## Running inference
 
 Follow the example in `tutorials/test_wrapper.ipynb`
 
@@ -49,6 +53,13 @@ python plot_run_results.py --subj $SUBJECT --enc_output_layer $layer --run $RUN_
 ```
 
 # Reproducing the checkpoints
+
+## Required setup
+
+In `utils/args.py`, modify the following paths in the default arguments:
+
+1. `--data_dir`: Directory containing metadata and neural data files. These are from NSD.
+1. `--imgs_dir`: Directory containing NSD image data. These are from NSD.
 
 ## Generating the brain parcels
 
