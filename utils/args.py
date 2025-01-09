@@ -30,7 +30,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--parcel_dir",
-        default="/engram/nklab/algonauts/ethan/parcelling/results/200c_20percentile_ftalgo_5init_3000iter_train",
+        default="../parcels/checkpoints",
         type=str,
     )
     parser.add_argument(

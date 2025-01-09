@@ -7,7 +7,6 @@ In `utils/args.py`, modify the following paths in the default arguments:
 1. `--output_path`: use the path to downloaded weights or folder where weights were saved after training
 1. `--data_dir`: directory containing metadata and neural data files
 1. `--imgs_dir`: directory containing NSD image data
-1. `--parcel_dir`: directory containing parcellation information
 
 ## Environment setup
 
@@ -31,7 +30,7 @@ conda env create -f env/parcel.yml
 
 # Run inference on your images
 
-Download the model weights and brain parcels from https://huggingface.co/ehwang/brain_encoder_weights/tree/main, or follow the training instructions below in [Model training](#model-training).
+Download the model weights and brain parcels from https://huggingface.co/ehwang/brain_encoder_weights/tree/main, or follow the training instructions below in [Reproducing the checkpoints](#reproducing-the-checkpoints).
 
 Follow the example in `tutorials/test_wrapper.ipynb`
 
@@ -49,7 +48,18 @@ valid splits include `train`, `val`, and `test`
 python plot_run_results.py --subj $SUBJECT --enc_output_layer $layer --run $RUN_ID
 ```
 
-# Model training
+# Reproducing the checkpoints
+
+## Generating the brain parcels
+
+We used a kmeans-based parcellation algorithm that generates around 450-500 parcels per hemisphere. To generate the brain parcels, run the following command:
+
+```bash
+conda activate parcel
+python generate_parcels.py --subj $SUBJECT --hemi $HEMI --save_dir /path/to/save/
+```
+
+## Model training
 
 If you're using slurm, see `scripts/train_plot` for a bash script to reproduce the checkpoint files.
 
