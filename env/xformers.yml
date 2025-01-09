@@ -15,7 +15,7 @@ dependencies:
   - brotli-python=1.0.9=py310h6a678d5_8
   - bzip2=1.0.8=h5eee18b_6
   - c-ares=1.19.1=h5eee18b_0
-  - ca-certificates=2024.11.26=h06a4308_0
+  - ca-certificates=2024.12.31=h06a4308_0
   - certifi=2024.12.14=py310h06a4308_0
   - charset-normalizer=3.3.2=pyhd3eb1b0_0
   - click=8.1.7=py310h06a4308_0
@@ -56,6 +56,7 @@ dependencies:
   - gstreamer=1.14.1=h5eee18b_1
   - h5py=3.12.1=py310hc0802c4_0
   - hdf5=1.12.1=h2b7332f_3
+  - huggingface_hub=0.27.1=pyhd8ed1ab_0
   - icu=73.1=h6a678d5_0
   - idna=3.7=py310h06a4308_0
   - intel-openmp=2023.1.0=hdb19cb5_46306
@@ -195,6 +196,7 @@ dependencies:
   - tornado=6.4.1=py310h5eee18b_0
   - tqdm=4.66.5=py310h2f386ee_0
   - traitlets=5.14.3=py310h06a4308_0
+  - typing-extensions=4.11.0=py310h06a4308_0
   - typing_extensions=4.11.0=py310h06a4308_0
   - tzdata=2024b=h04d1e81_0
   - unicodedata2=15.1.0=py310h5eee18b_0
