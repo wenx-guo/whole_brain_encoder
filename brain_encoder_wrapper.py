@@ -14,6 +14,8 @@ import argparse
 import copy
 from tqdm import tqdm
 from scipy.stats import pearsonr as corr
+from huggingface_hub import snapshot_download
+import shutil
 
 
 # argparser needs: subj
@@ -77,7 +79,48 @@ class BrainEncoderWrapper:
                         self.model_paths[hemi].append(model_path)
 
                     else:
-                        print(f"WARNING: Model path {model_path} is not valid")
+                        if not (
+                            1 <= self.subj <= 8
+                            and r in [1, 2]
+                            and layer_num in [1, 3, 5, 7]
+                        ):
+                            print(f"WARNING: Model path {model_path} is not valid")
+                            continue
+
+                        fp = snapshot_download(
+                            repo_id="ehwang/brain_encoder_weights",
+                            allow_patterns=f"checkpoints/nsd_test/dinov2_q_transformer/subj_{self.subj:02}/enc_{layer_num}/run_{r}/{hemi}/*",
+                        )
+                        output_path = (
+                            Path(args.output_path)
+                            / f"nsd_test/dinov2_q_transformer/subj_{self.subj:02}/enc_{layer_num}/run_{r}/{hemi}"
+                        )
+                        output_path.mkdir(exist_ok=True, parents=True)
+                        src_path = (
+                            Path(fp)
+                            / f"checkpoints/nsd_test/dinov2_q_transformer/subj_{self.subj:02}/enc_{layer_num}/run_{r}/{hemi}"
+                        )
+                        for item in src_path.rglob(
+                            "*"
+                        ):  # Recursively match all files and subdirectories
+                            dest = output_path / item.relative_to(src_path)
+                            if item.is_symlink():
+                                # Resolve the symlink to the actual file
+                                resolved_path = item.resolve(strict=True)
+                                dest.parent.mkdir(
+                                    parents=True, exist_ok=True
+                                )  # Ensure the parent directory exists
+                                shutil.move(str(resolved_path), str(dest))
+                            elif item.is_dir():
+                                dest.mkdir(parents=True, exist_ok=True)
+                            else:
+                                dest.parent.mkdir(
+                                    parents=True, exist_ok=True
+                                )  # Ensure the parent directory exists
+                                shutil.move(str(item), str(dest))
+
+                        if self.is_valid_model(model_path, hemi):
+                            self.model_paths[hemi].append(model_path)
 
             assert self.model_paths[hemi], f"No valid models found for {hemi}"
 

@@ -4,17 +4,15 @@
 
 The ensemble model is a combination of many individual models, each trained on a particular subject, encoder layer, and hemisphere. It uses the validation split to generate a model confidence value for each voxel, so it should be evaluated on the test split or unseen data.
 
-## Environment setup
-
-### Downloading weights
-
-In `utils/args.py`, set the default argument `--output_path` to point to downloaded weights or folder where weights were saved after training. Download the model weights from https://huggingface.co/ehwang/brain_encoder_weights/tree/main by cloning the repo like [this](https://huggingface.co/ehwang/brain_encoder_weights/tree/main?clone=true), or follow the training instructions below in [Reproducing the checkpoints](#reproducing-the-checkpoints). This should point to the `checkpoints/` folder.
-
-The expected directory structure is: `checkpoints/nsd_test/dinov2_q_transformer/subj_{subj_num:02}/enc_{enc_layer}/run_{run_num}/{hemi}`.
-
 The hosted ensemble model includes weights for two runs each for
 - `lh` and `rh` hemispheres
-- encoder layers 1, 3, 5, 7 from the dino backbone
+- encoder layers 1, 3, 5, 7 from the dino backbone.
+
+The model weights will be automatically downloaded from https://huggingface.co/ehwang/brain_encoder_weights/tree/main and the directory structure will automatically be created. Note that this will use around 11GB of space per subject. If you want to download the files manually, be sure that git lfs is installed.
+
+Alternatively, follow the training instructions below in [Reproducing the checkpoints](#reproducing-the-checkpoints) to train the checkpoints yourself. This should point to the `checkpoints/` folder. The expected directory structure is: `checkpoints/nsd_test/dinov2_q_transformer/subj_{subj_num:02}/enc_{enc_layer}/run_{run_num}/{hemi}`.
+
+## Environment setup
 
 ### Conda environment for model training and inference
 
@@ -26,7 +24,7 @@ conda env create -f env/xformers.yml
 
 ## Running inference
 
-Follow the example in `tutorials/test_wrapper.ipynb`
+Follow the example in `tutorials/test_wrapper.ipynb`.
 
 # Plotting results
 

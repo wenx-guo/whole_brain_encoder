@@ -8,7 +8,7 @@ def get_args_parser():
     parser.add_argument("--resume", default=None, help="resume from checkpoint")
     parser.add_argument(
         "--output_path",
-        default="/engram/nklab/algonauts/ethan/whole_brain_encoder/checkpoints",
+        default="./checkpoints",
         type=str,
         help="if not none, then store the model resuls",
     )
