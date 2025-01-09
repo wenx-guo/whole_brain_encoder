@@ -30,7 +30,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--parcel_dir",
-        default="../parcels/checkpoints",
+        default="./parcels/checkpoints",
         type=str,
     )
     parser.add_argument(
