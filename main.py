@@ -226,13 +226,18 @@ def main(args):
                             checkpoint_paths = [
                                 args.save_dir / f"checkpoint_{dataset_type}.pth"
                             ]
-                            # print('checkpoint_path:',  checkpoint_paths)
+                            model_state_dict = model.state_dict()
+
+                            model_state_dict = {
+                                k: v
+                                for k, v in checkpoint["model"].items()
+                                if "backbone_model" not in k
+                            }
+
                             for checkpoint_path in checkpoint_paths:
                                 utils.save_on_master(
                                     {
-                                        "model": model.state_dict(),
-                                        "optimizer": optimizer.state_dict(),
-                                        "lr_scheduler": lr_scheduler.state_dict(),
+                                        "model": model_state_dict,
                                         "epoch": epoch,
                                         "args": args,
                                         "val_perf": best_val_perf[dataset_type],
