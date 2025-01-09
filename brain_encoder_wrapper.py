@@ -25,7 +25,6 @@ class BrainEncoderWrapper:
         encoder_arch="transformer",
         enc_output_layer=[1, 3, 5, 7],
         runs=[1, 2],
-        results_dir=None,
     ):
         torch.serialization.add_safe_globals([argparse.Namespace, PosixPath])
         parser = get_args_parser()
@@ -39,7 +38,6 @@ class BrainEncoderWrapper:
         self.enc_output_layer = enc_output_layer
         self.runs = runs
         self.subj = subj
-        self.results_dir = results_dir
         self.default_args = args
 
         self.metadata = np.load(
