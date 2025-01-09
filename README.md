@@ -14,31 +14,25 @@ The expected directory structure is: `checkpoints/nsd_test/dinov2_q_transformer/
 
 ### Conda environment for model training and inference
 
-Environments for running the model, plotting, and parcellation algorithm are provided in the `env/` folder. To create the environments, run the following commands:
-
-Environment for inference and training
+Set up the conda environment for the model:
 
 ```bash
 conda env create -f env/xformers.yml
-```
-
-Environment for pycortex plotting
-
-```bash
-conda env create -f env/pycortex.yml
-```
-
-Environment for running the parcellation algorithm
-
-```bash
-conda env create -f env/parcel.yml
 ```
 
 ## Running inference
 
 Follow the example in `tutorials/test_wrapper.ipynb`
 
-# Plot ensemble results
+# Plotting results
+
+Set up the conda environment for [pycortex](https://github.com/gallantlab/pycortex) plotting:
+
+```bash
+conda env create -f env/pycortex.yml
+```
+
+## Plot ensemble results
 
 ```bash
 conda activate pycortex
@@ -49,7 +43,7 @@ The following directory structure is expected: `results/enc_{"_".join(enc_layers
 
 Valid splits include `train`, `val`, and `test`
 
-# Plot results for a run
+## Plot results for a run
 
 ```bash
 conda activate pycortex
@@ -68,6 +62,12 @@ In `utils/args.py`, modify the following paths in the default arguments:
 1. `--imgs_dir`: Directory containing NSD image data. These are from NSD.
 
 ## Generating the brain parcels
+
+Set up the conda environment for the parcellation algorithm:
+
+```bash
+conda env create -f env/parcel.yml
+```
 
 We used a kmeans-based parcellation algorithm that generates around 450-500 parcels per hemisphere. To generate the brain parcels, run the following command:
 
