@@ -12,6 +12,10 @@ In `utils/args.py`, set the default argument `--output_path` to point to downloa
 
 The expected directory structure is: `checkpoints/nsd_test/dinov2_q_transformer/subj_{subj_num:02}/enc_{enc_layer}/run_{run_num}/{hemi}`.
 
+The hosted ensemble model includes weights for two runs each for
+- `lh` and `rh` hemispheres
+- encoder layers 1, 3, 5, 7 from the dino backbone
+
 ### Conda environment for model training and inference
 
 Set up the conda environment for the model:
@@ -88,7 +92,3 @@ Otherwise, to train a single model, run:
 conda activate xformers
 python main.py --subj $SUBJECT --enc_output_layer $layer --run $RUN_ID --hemi $HEMI
 ```
-
-If you want to reproduce the checkpoints in the ensemble model, you want to train two runs each for
-- `lh` and `rh` hemispheres
-- encoder layers 1, 3, 5, 7 from the dino backbone
