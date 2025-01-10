@@ -87,6 +87,9 @@ class BrainEncoderWrapper:
                             print(f"WARNING: Model path {model_path} is not valid")
                             continue
 
+                        print(
+                            f"Downloading checkpoint from huggingface into checkpoints/nsd_test/dinov2_q_transformer/subj_{self.subj:02}/enc_{layer_num}/run_{r}/{hemi}/"
+                        )
                         fp = snapshot_download(
                             repo_id="ehwang/brain_encoder_weights",
                             allow_patterns=f"checkpoints/nsd_test/dinov2_q_transformer/subj_{self.subj:02}/enc_{layer_num}/run_{r}/{hemi}/*",
@@ -342,7 +345,7 @@ def main():
     )
 
     save_dir = (
-        Path(model.results_dir)
+        Path(input_args.results_dir)
         / f"enc_{'_'.join([str(s) for s in model.enc_output_layer])}_run_{'_'.join([str(s) for s in model.runs])}"
         / f"subj_{input_args.subj:02}"
     )
