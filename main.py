@@ -230,7 +230,7 @@ def main(args):
 
                             model_state_dict = {
                                 k: v
-                                for k, v in checkpoint["model"].items()
+                                for k, v in model_state_dict.items()
                                 if "backbone_model" not in k
                             }
 
