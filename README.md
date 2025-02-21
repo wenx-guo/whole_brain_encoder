@@ -91,7 +91,7 @@ conda activate xformers
 python main.py --subj $SUBJECT --enc_output_layer $layer --run $RUN_ID --hemi $HEMI
 ```
 
-### To train the model only on the nsd labeled area, with both models on one gpu
+### To train the model only on the nsd labeled area, with both hemispheres on the same run/model:
 
 ```bash
 conda activate xformers
