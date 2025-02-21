@@ -44,12 +44,11 @@ def train_one_epoch(
         metric_logger.log_every(data_loader, print_freq, header)
     ):
         imgs = imgs.to(args.device, non_blocking=True)
-        target_betas = (
-            targets["betas"].to(args.device, non_blocking=True).to(torch.float32)
-        )
+        targets = targets["betas"][:, dataset.valid_voxel_mask]
+        target_betas = targets.to(args.device, non_blocking=True).to(torch.float32)
 
         outputs = model(imgs)
-        outputs = outputs["pred"]
+        outputs = outputs["pred"][:, dataset.valid_voxel_mask]
         # outputs_recon = torch.zeros_like(target_betas)
         # outputs_recon.index_add_(
         #     1,
@@ -124,12 +123,16 @@ def evaluate(args, model, criterion, data_loader, dataset, print_freq=25):
     preds = []
 
     for imgs, targets in metric_logger.log_every(data_loader, print_freq, header):
+        target_betas_valid = targets["betas"][:, dataset.valid_voxel_mask].to(
+            args.device, non_blocking=True
+        )
         target_betas = (
             targets["betas"].to(args.device, non_blocking=True).to(torch.float32)
         )
 
         imgs = imgs.to(args.device, non_blocking=True)
         outputs = model(imgs)
+        outputs_valid = outputs["pred"][:, dataset.valid_voxel_mask]
         outputs = outputs["pred"]
 
         # outputs_recon = torch.zeros_like(target_betas)
@@ -140,7 +143,9 @@ def evaluate(args, model, criterion, data_loader, dataset, print_freq=25):
         # )
 
         if criterion is not None:
-            loss = criterion(outputs, target_betas) / dataset.num_hemi_voxels
+            loss = (
+                criterion(outputs_valid, target_betas_valid) / dataset.num_hemi_voxels
+            )
         else:
             loss = torch.tensor(0)
 

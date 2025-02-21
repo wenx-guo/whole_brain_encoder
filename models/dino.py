@@ -11,13 +11,23 @@ from torchvision.models._utils import IntermediateLayerGetter
 from typing import Dict, List, Callable
 
 from utils.utils import NestedTensor
+import os
+
+os.environ["TORCH_HUB_OFFLINE"] = "1"
 
 
 class dino_model_with_hooks(nn.Module):
     def __init__(self, enc_output_layer, return_interm_layers=False):
         super().__init__()
 
-        self.backbone = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14")
+        # self.backbone = torch.hub.load(
+        #     "facebookresearch/dinov2", "dinov2_vitb14", source="local"
+        # )
+        self.backbone = torch.hub.load(
+            "/home/eh2976/.cache/torch/hub/facebookresearch_dinov2_main",
+            "dinov2_vitb14",
+            source="local",
+        )
         self.num_channels = 768
 
         for name, parameter in self.backbone.named_parameters():

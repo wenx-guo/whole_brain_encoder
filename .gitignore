@@ -124,7 +124,6 @@ celerybeat.pid
 # Environments
 .env
 .venv
-env/
 venv/
 ENV/
 env.bak/
@@ -165,3 +164,9 @@ wandb/
 
 core*
 *.out
+*.npy
+*.txt
+*.jpg
+.DS_Store
+*.pth
+*.png

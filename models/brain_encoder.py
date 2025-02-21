@@ -5,6 +5,9 @@ from collections import OrderedDict
 from utils.utils import NestedTensor, nested_tensor_from_tensor_list
 from models.backbone import build_backbone
 from models.transformer import build_transformer
+import os
+
+os.environ["TORCH_HUB_OFFLINE"] = "1"
 
 
 class brain_encoder(nn.Module):
@@ -12,6 +15,7 @@ class brain_encoder(nn.Module):
         super().__init__()
 
         self.lr_backbone = args.lr_backbone
+        self.device = args.device
 
         self.backbone_arch = args.backbone_arch
         self.return_interm = args.return_interm
@@ -39,16 +43,16 @@ class brain_encoder(nn.Module):
         self.query_embed = nn.Embedding(self.num_queries, self.hidden_dim)
 
         ### backbone_arch for feature exraction
-        if isinstance(args.enc_layers, int) or len(args.enc_layers) == 1:
-            self.single_backbone = True
-            self.backbone_model = build_backbone(args)
-        else:
-            self.single_backbone = False
-            self.backbones = []
-            for enc_layer in [1, 3, 5, 7]:
-                args.enc_layers = enc_layer
-                backbone_model = build_backbone(args).to(args.device)
-                self.backbones.append(backbone_model)
+        # if isinstance(args.enc_layers, int) or len(args.enc_layers) == 1:
+        self.single_backbone = True
+        self.backbone_model = build_backbone(args)
+        # else:
+        #     self.single_backbone = False
+        #     self.backbones = []
+        #     for enc_layer in [1, 3, 5, 7]:
+        #         args.enc_layers = enc_layer
+        #         backbone_model = build_backbone(args).to(args.device)
+        #         self.backbones.append(backbone_model)
 
         if ("resnet" in self.backbone_arch) and ("transformer" in self.encoder_arch):
             self.input_proj = nn.Conv2d(
@@ -65,15 +69,21 @@ class brain_encoder(nn.Module):
         # self.num_parcels = dataset.num_parcels
 
         # this is a mask of shape (num_parcels, num_voxels) where each row is the voxels that belong in a parcel
+        self.valid_voxel_mask = dataset.valid_voxel_mask.to(args.device)
         self.parcel_mask = torch.zeros(dataset.num_hemi_voxels, self.num_queries).to(
             args.device
         )
+        self.voxel_map = torch.zeros_like(
+            dataset.valid_voxel_mask, dtype=torch.int64
+        )  # translates from possibly invalid voxel index to valid voxel index
+        self.voxel_map[dataset.valid_voxel_mask] = torch.arange(dataset.num_hemi_voxels)
         all_parcels = (
             dataset.parcels[0] + dataset.parcels[1]
             if len(dataset.parcels) == 2
             else dataset.parcels
         )
         for i, parcel in enumerate(all_parcels):
+            parcel = self.voxel_map[parcel]
             self.parcel_mask[parcel, i] = 1
 
         # self.parcel_mask = (
@@ -119,6 +129,15 @@ class brain_encoder(nn.Module):
         # )
 
         self.embed = nn.Sequential(nn.Linear(self.hidden_dim, dataset.num_hemi_voxels))
+
+    def to_device(self, device):
+        """Recursively move all torch objects to a specified device"""
+        self.device = device
+        for attr_name, attr_value in self.__dict__.items():
+            if isinstance(attr_value, torch.Tensor):
+                setattr(self, attr_name, attr_value.to(device))
+            elif isinstance(attr_value, torch.nn.Module):
+                attr_value.to(device)
 
     def forward(self, samples: NestedTensor):
         if isinstance(samples, (list, torch.Tensor)):
@@ -259,12 +278,15 @@ class brain_encoder(nn.Module):
         #     output_tokens = input_proj_src.squeeze()
         #     lh_f_pred = self.lh_embed(output_tokens)
         #     rh_f_pred = self.rh_embed(output_tokens)
-
+        a = torch.zeros(
+            (len(pred), len(self.valid_voxel_mask)), dtype=torch.float32
+        ).to(self.device)
+        a[:, self.valid_voxel_mask] = pred
         out = {
             # "lh_f_pred": lh_f_pred,
             # "rh_f_pred": rh_f_pred,
-            "pred": pred,
-            # "output_tokens": output_tokens,
+            "pred": a,
+            "output_tokens": output_tokens,
         }
 
         return out

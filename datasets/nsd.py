@@ -13,7 +13,7 @@ from itertools import chain
 
 
 class nsd_dataset_tempate(Dataset):
-    def __init__(self, args, split="train", parcel_path=None, transform=None):
+    def __init__(self, args, split="train", transform=None):
         self.subj = int(args.subj)
         self.hemi = args.hemi
         self.transform = transform
@@ -32,34 +32,44 @@ class nsd_dataset_tempate(Dataset):
         ], "split must be either train, test, val, or custom"
         self.split_imgs = self.metadata[f"{split}_img_num"]
 
-        self.betas = h5py.File(neural_data_path / f"betas_sub-{self.subj:02}.h5", "r")[
-            f"{self.hemi}_betas"
-        ]
+        if self.hemi is not None:
+            self.betas = h5py.File(
+                neural_data_path / f"betas_sub-{self.subj:02}.h5", "r"
+            )[f"{self.hemi}_betas"]
+        else:
+            self.betas = [
+                h5py.File(neural_data_path / f"betas_sub-{self.subj:02}.h5", "r")[
+                    f"{hemi}_betas"
+                ]
+                for hemi in ["lh", "rh"]
+            ]
 
         imgs_dir = Path(args.imgs_dir)
         self.imgs = h5py.File(imgs_dir / "nsd_stimuli.hdf5", "r")
 
-        self.num_axis_voxels = [
-            len(self.metadata[f"{self.hemi}_anterior_vertices"]),
-            len(self.metadata[f"{self.hemi}_posterior_vertices"]),
-        ]
-        self.num_hemi_voxels = sum(self.num_axis_voxels)
-        self.axis_mask = []
-        for axis in ["anterior", "posterior"]:
-            axis_mask = torch.zeros(self.num_hemi_voxels, dtype=torch.bool)
-            vertices_idxs = self.metadata[f"{self.hemi}_{axis}_vertices"]
-            axis_mask[vertices_idxs] = True
-            self.axis_mask.append(axis_mask)
-
         parcel_path = Path(args.parcel_dir)
-        self.parcels = torch.load(
-            parcel_path / f"{args.hemi}_labels_s{self.subj:02}.pt", weights_only=True
-        )
-
+        if args.hemi is not None:
+            self.parcels = torch.load(
+                parcel_path / f"{args.hemi}_labels_s{self.subj:02}.pt",
+                weights_only=True,
+            )
+        else:
+            self.parcels = torch.load(
+                parcel_path / f"labels_s{self.subj:02}.pt", weights_only=True
+            )
         # we are only interested in evaluating on these voxels
-        self.valid_voxel_mask = torch.zeros(self.num_hemi_voxels, dtype=torch.bool)
+        parcel_idxs = torch.cat([p.flatten() for p in self.parcels], dim=0)
+        parcel_idxs = torch.unique(parcel_idxs)
+        if self.hemi is not None:
+            self.valid_voxel_mask = torch.zeros(len(self.betas[0]), dtype=torch.bool)
+        else:
+            self.valid_voxel_mask = torch.zeros(
+                sum([len(b[0]) for b in self.betas]), dtype=torch.bool
+            )
         for parcel in self.parcels:
             self.valid_voxel_mask[parcel] = True
+        self.num_hemi_voxels = torch.sum(self.valid_voxel_mask).item()
+        print("Number of valid voxels: ", self.num_hemi_voxels)
 
         self.num_parcels = len(self.parcels)
         print("Number of parcels: ", self.num_parcels)
@@ -172,7 +182,7 @@ class nsd_dataset_tempate(Dataset):
         ]
 
     def transform_img(self, img):
-        img = Image.fromarray(img)
+        # img = Image.fromarray(img)
         # Preprocess the image and send it to the chosen device ('cpu' or 'cuda')
 
         if self.transform:
@@ -218,7 +228,7 @@ class nsd_dataset(nsd_dataset_tempate):
     def __init__(
         self, args, split="train", parcel_path=None, transform=None, preload_data=False
     ):
-        super().__init__(args, split, parcel_path, transform)
+        super().__init__(args, split, transform)
 
         self.split_idxs = np.where(
             np.isin(self.metadata["img_presentation_order"], self.split_imgs)
@@ -232,7 +242,12 @@ class nsd_dataset(nsd_dataset_tempate):
         img = self.transform_img(img)
 
         fmri_data = {}
-        fmri_data["betas"] = self.betas[split_idx]
+        if self.hemi is not None:
+            fmri_data["betas"] = torch.from_numpy(self.betas[split_idx])
+        else:
+            fmri_data["betas"] = torch.from_numpy(
+                np.concatenate([b[split_idx] for b in self.betas])
+            )
 
         return img, fmri_data
 
@@ -244,7 +259,7 @@ class nsd_dataset_avg(nsd_dataset_tempate):
     def __init__(
         self, args, split="train", parcel_paths=None, transform=None, preload_data=False
     ):
-        super().__init__(args, split, parcel_paths, transform)
+        super().__init__(args, split, transform)
 
         assert split in [
             "train",
@@ -270,9 +285,16 @@ class nsd_dataset_avg(nsd_dataset_tempate):
 
         fmri_data = {}
         data_idxs = self.img_to_runs[i]
-        data = torch.from_numpy(self.betas[data_idxs])
-        data = torch.mean(data, axis=0)
-        fmri_data["betas"] = data
+
+        if self.hemi is not None:
+            data = torch.from_numpy(self.betas[data_idxs])
+            data = torch.mean(data, axis=0)
+            fmri_data["betas"] = data
+        else:
+            data = np.concatenate([b[data_idxs] for b in self.betas], axis=1)
+            data = torch.from_numpy(data)
+            data = torch.mean(data, axis=0)
+            fmri_data["betas"] = data
 
         return img, fmri_data
 
@@ -286,20 +308,18 @@ class nsd_dataset_custom(nsd_dataset_tempate):
     def __init__(
         self,
         img_data,
-        args,
-        parcel_paths=None,
         transform=None,
     ):
-        super().__init__(args, "val", parcel_paths, transform)
+        self.transform = transform
+        self.backbone_arch = "dinov2_q"
 
-        del self.betas
         self.img_data = img_data
 
     def __getitem__(self, idx):
         img = self.img_data[idx]
         img = self.transform_img(img)
 
-        return img, {"betas": torch.empty((self.num_hemi_voxels))}
+        return img, {"betas": torch.empty((163842))}
 
     def __len__(self):
         return len(self.img_data)

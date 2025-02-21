@@ -10,7 +10,10 @@ import contextlib
 from io import StringIO
 import copy
 import argparse
-from utils.args import get_args_parser, get_model_dir_args, get_run_dir
+
+# from utils.args import get_args_parser, get_model_dir_args, get_run_dir
+from io import BytesIO
+from PIL import Image, ImageDraw, ImageFont
 
 
 # Function to suppress print statements
@@ -26,7 +29,87 @@ def suppress_print():
         sys.stdout = original_stdout
 
 
-def plot_parcels(lh, rh, title="", fig_path=None, cmap="RdBu_r", clip=1):
+def add_title_to_image(
+    image, title, title_font_size=80, title_color="black", title_bg_color="white"
+):
+    """
+    Create a new image with extra space at the top for the title,
+    then draw the title text.
+    """
+    width, height = image.size
+    # Define the height for the title area (adjust as needed)
+    title_height = title_font_size * 2
+    new_height = height + title_height
+
+    # Create a new image with a background color for the title area
+    new_image = Image.new("RGB", (width, new_height), title_bg_color)
+
+    # Paste the original image below the title area
+    new_image.paste(image, (0, title_height))
+
+    # Prepare to draw text on the new image
+    draw = ImageDraw.Draw(new_image)
+    try:
+        # Try to load a truetype font (adjust the font path as needed)
+        font = ImageFont.truetype("arial.ttf", title_font_size)
+    except IOError:
+        # Fallback if the font file is not found
+        font = ImageFont.load_default()
+
+    # Calculate the position to center the title using textbbox
+    # textbbox returns (left, top, right, bottom)
+    bbox = draw.textbbox((0, 0), title, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+
+    text_x = (width - text_width) // 2
+    text_y = (title_height - text_height) // 2
+
+    draw.text((text_x, text_y), title, fill=title_color, font=font)
+
+    return new_image
+
+
+def plot_parcels_return_img(
+    lh, rh, title="", cmap="RdBu_r", vmin=0, clip=1, badcolor="grey", colorbar=True
+):
+    # =============================================================================
+    # Plot parameters for colorbar
+    # =============================================================================
+    plt.rc("xtick", labelsize=19)
+    plt.rc("ytick", labelsize=19)
+
+    # =============================================================================
+    # Prepare data for plotting
+    # =============================================================================
+    subject = "fsaverage"
+    data = np.append(lh, rh)
+    cmap = plt.cm.get_cmap(cmap).copy()
+    cmap.set_bad(color=badcolor)
+    vertex_data = cortex.Vertex(data, subject, cmap=cmap, vmin=vmin, vmax=clip)
+
+    with suppress_print():
+        # cortex.quickshow(vertex_data, ax=ax)  # Render on the given Axes object
+        buffer = BytesIO()
+        cortex.quickflat.make_png(
+            buffer, vertex_data, height=1024, width=1024, dpi=300, with_colorbar=colorbar
+        )
+
+        # ax.imshow(img, aspect="auto")
+        # ax.axis("off")  # Optional: turn off axes for a cleaner lookax.axis("off")
+
+    buffer.seek(0)
+    parcel_img = Image.open(buffer)
+
+    if title:
+        parcel_img = add_title_to_image(parcel_img, title, title_font_size=160)
+
+    return parcel_img
+
+
+def plot_parcels(
+    lh, rh, title="", fig_path=None, cmap="RdBu_r", vmin=0, clip=1, badcolor="grey"
+):
     # =============================================================================
     # Plot parameters for colorbar
     # =============================================================================
@@ -38,7 +121,11 @@ def plot_parcels(lh, rh, title="", fig_path=None, cmap="RdBu_r", clip=1):
     # =============================================================================
     subject = "fsaverage"
     data = np.append(lh, rh)
-    vertex_data = cortex.Vertex(data, subject, cmap=cmap, vmin=0, vmax=clip)  # "afmhot"
+    cmap = plt.cm.get_cmap(cmap).copy()
+    cmap.set_bad(color=badcolor)
+    vertex_data = cortex.Vertex(
+        data, subject, cmap=cmap, vmin=vmin, vmax=clip
+    )  # "afmhot"
 
     # cmap = plt.cm.get_cmap("Oranges").copy()
     # cmap.set_bad(color="lightgrey")
@@ -102,7 +189,7 @@ def plot_run_results(args, avg_or_nonavg):
 
 
 def plot_roi_correlation(
-    plt_title, subj, val_correlations, avg_or_nonavg, save_dir, split
+    plt_title, subj, val_correlations, avg_or_nonavg, save_dir, split, filename
 ):
     neural_data_path = Path(
         "/engram/nklab/datasets/natural_scene_dataset/model_training_datasets/neural_data"
@@ -163,7 +250,7 @@ def plot_roi_correlation(
 
     plt.tight_layout()
     plt.title(plt_title)
-    plt.savefig(save_dir / f"{split}_roi_correlation_{avg_or_nonavg}.jpg", dpi=300)
+    plt.savefig(save_dir / filename, dpi=300)
 
     # for hemi in ["lh", "rh"]:
     # rois_save_dir = save_dir / "rois"
@@ -225,6 +312,7 @@ def main():
             "avg",
             results_dir,
             args.split,
+            filename=f"{args.split}_roi_correlation.jpg",
         )
 
         return

@@ -1,10 +1,11 @@
 import torch
 from torchvision import transforms
+import torchvision
 
-# from models.activations import get_transformer_activations
+from models.activations import get_transformer_activations
 from models.brain_encoder import brain_encoder
 
-from datasets.nsd import nsd_dataset_custom, nsd_dataset_avg
+from datasets.nsd import nsd_dataset_custom, nsd_dataset_avg, nsd_dataset
 from engine import evaluate
 import numpy as np
 from scipy.special import softmax
@@ -16,6 +17,7 @@ from tqdm import tqdm
 from scipy.stats import pearsonr as corr
 from huggingface_hub import snapshot_download
 import shutil
+from PIL import Image
 
 
 # argparser needs: subj
@@ -41,6 +43,9 @@ class BrainEncoderWrapper:
         self.runs = runs
         self.subj = subj
         self.default_args = args
+        self.neural_data_path = Path(args.data_dir)
+        self.parcel_dir = Path(args.parcel_dir)
+        self.lr_backbone = None
 
         self.metadata = np.load(
             Path(args.data_dir) / f"metadata_sub-{self.subj:02}.npy", allow_pickle=True
@@ -53,6 +58,8 @@ class BrainEncoderWrapper:
         self.transform = transforms.Compose(
             [
                 transforms.ToTensor(),
+                transforms.Resize(425),
+                transforms.CenterCrop(425),
                 transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
             ]
         )
@@ -158,6 +165,8 @@ class BrainEncoderWrapper:
             val_correlation["rh"].mean(axis=1).min(),
         )
 
+        self.preload_models()
+
     def is_valid_model(self, model_path, hemi):
         paths = [
             model_path,
@@ -182,13 +191,18 @@ class BrainEncoderWrapper:
 
         pretrained_dict = checkpoint["model"]
         args = checkpoint["args"]
-        args.data_dir = self.default_args.data_dir
-        args.imgs_dir = self.default_args.imgs_dir
-        args.parcel_dir = self.default_args.parcel_dir
-        args.data_dir = self.default_args.data_dir
+        # args.data_dir = self.default_args.data_dir
+        # args.imgs_dir = self.default_args.imgs_dir
+        # args.parcel_dir = self.default_args.parcel_dir
 
-        dataset = nsd_dataset_custom(images, args, transform=self.transform)
+        dataset = nsd_dataset_avg(args)
 
+        # if "lh" in model_path.name:
+        #     args.device = "cuda:0"
+        # elif "rh" in model_path.name:
+        #     args.device = "cuda:1"
+        # else:
+        #     raise ValueError("Model path does not contain hemisphere")
         model = brain_encoder(args, dataset)
 
         if len([k for k in pretrained_dict.keys() if ".orig_mod" in k]) > 0:
@@ -202,23 +216,29 @@ class BrainEncoderWrapper:
         }
         model.load_state_dict(pretrained_dict, strict=False)
 
+        # if "lh" in model_path.name:
+        #     print("Loading model to cuda:0")
+        #     model = model.to("cuda:0")
+        #     model.device = "cuda:0"
+        # elif "rh" in model_path.name:
+        #     print("Loading model to cuda:1")
+        #     model = model.to("cuda:1")
+        #     model.device = "cuda:1"
+        # else:
+        #     raise ValueError("Model path does not contain hemisphere")
         model = model.to(device)
         model.eval()
 
         return model, args, dataset
 
-    # def extract_transformer_features(self, model, imgs, enc_layers=0, dec_layers=1):
-    #     model_features = {}
-    #     try:
-    #         model = model.module
-    #     except:
-    #         model = model
+    def extract_transformer_features(self, model, imgs, enc_layers=0, dec_layers=1):
+        model_features = {}
 
-    #     outputs, enc_output, enc_attn_weights, dec_output, dec_attn_weights = (
-    #         get_transformer_activations(model, imgs, enc_layers, dec_layers)
-    #     )
+        outputs, enc_output, enc_attn_weights, dec_output, dec_attn_weights = (
+            get_transformer_activations(model, imgs, enc_layers, dec_layers)
+        )
 
-    #     return outputs, enc_output, enc_attn_weights, dec_output, dec_attn_weights
+        return outputs, enc_output, enc_attn_weights, dec_output, dec_attn_weights
 
     # def combine_transformer_features(self, model, imgs, runs, enc_output_layers):
 
@@ -228,101 +248,150 @@ class BrainEncoderWrapper:
     #     outputs, enc_output, enc_attn_weights, dec_output, dec_attn_weights = \
     #       self.extract_transformer_features(self, model, imgs)
 
-    # def attention(self, images):
-    #     # images = images.to(self.device)
-    #     model_features = {}
-    #     if self.model is not None:
-    #         outputs, enc_output, enc_attn_weights, dec_output, dec_attn_weights = (
-    #             self.extract_transformer_features(self.model, images)
-    #         )
-
-    #         # print('dec_attn_weights', len(dec_attn_weights), dec_attn_weights[0].shape)
-
-    #         # model_features['outputs'] = outputs
-    #         # model_features['enc_output'] = enc_output
-    #         # model_features['enc_attn_weights'] = enc_attn_weights
-    #         # model_features['dec_output'] = dec_output
-    #         model_features["dec_attn_weights"] = dec_attn_weights
-
-    #     else:
-    #         dec_attn_weights_all = []
-    #         for enc_output_layer in self.enc_output_layer:
-    #             for run in self.runs:
-    #                 print(f"Run {run}")
-    #                 # subj = format(self.subj, '02')
-    #                 model_path = f"{self.results_dir}/nsd_test/{self.arch}/subj_{self.subj}/{self.readout_res}/enc_{enc_output_layer}/run_{run}/"
-    #                 model, _ = self.load_model_path(model_path)
-
-    #                 _, _, _, _, dec_attn_weights = self.extract_transformer_features(
-    #                     model, images.to(self.device)
-    #                 )
-
-    #                 dec_attn_weights_all.append(
-    #                     dec_attn_weights[0].detach().cpu().numpy()
-    #                 )
-
-    #                 del model
-
-    #         model_features["dec_attn_weights"] = dec_attn_weights_all
-
-    #     return model_features
-
-    def forward(self, images):
-        pred = {
-            "lh": np.zeros((images.shape[0], self.num_voxels)),
-            "rh": np.zeros((images.shape[0], self.num_voxels)),
-        }
+    def attention(self, images):
+        model_features = {}
+        dec_attn_weights_all = {"lh": [], "rh": []}
 
         for hemi in ["lh", "rh"]:
-            hemi_preds = torch.zeros(
-                len(images), len(self.model_paths[hemi]), self.num_voxels
-            )
             model_paths = self.model_paths[hemi]
-
             for idx, model_path in enumerate(
                 tqdm(
                     model_paths,
                     desc=f"Running inference on {hemi} models",
                 )
             ):
-                preds = self.forward_region(model_path, images)
-                preds = torch.nan_to_num(preds)
+                model, args, imgs_dataset = self.load_model_path(
+                    model_path,
+                    images,
+                    self.device,
+                )
+                imgs_loader = torch.utils.data.DataLoader(
+                    imgs_dataset,
+                    batch_size=32,
+                    num_workers=4,
+                    pin_memory=True,
+                    shuffle=False,
+                )
+
+                dec_attn_weights_out = []
+                for imgs, _ in imgs_loader:
+                    imgs = imgs.to(self.device)
+                    _, _, _, _, dec_attn_weights = self.extract_transformer_features(
+                        model, imgs
+                    )
+                    dec_attn_weights_out.append(dec_attn_weights[0].detach().cpu())
+                dec_attn_weights_out = torch.cat(dec_attn_weights_out, dim=0)
+
+                dec_attn_weights_all[hemi].append(dec_attn_weights_out.cpu().numpy())
+
+                del model
+
+        model_features["dec_attn_weights"] = dec_attn_weights_all
+
+        return model_features
+
+    def forward_hemi(self, hemi, images, use_dataloader):
+        hemi_preds = torch.zeros(
+            len(images), len(self.model_paths[hemi]), self.num_voxels
+        )
+
+        if use_dataloader:
+            models = self.models[hemi]
+            for idx, model in enumerate(
+                tqdm(
+                    models,
+                    desc=f"Running inference on {hemi} models",
+                    leave=False,
+                )
+            ):
+                dataset = nsd_dataset_custom(images, transform=self.transform)
+                imgs_loader = torch.utils.data.DataLoader(
+                    dataset,
+                    batch_size=32,
+                    num_workers=4,
+                    pin_memory=True,
+                    shuffle=False,
+                )
+                preds = []
+                for imgs, _ in tqdm(
+                    imgs_loader, desc="running forward pass", leave=False
+                ):
+                    # print("imgs", imgs.shape)
+                    pred = self.forward_batch(model, imgs)
+                    # print("pred", pred.shape)
+                    pred = torch.nan_to_num(pred).cpu()
+                    preds.append(pred)
+                preds = torch.cat(preds, dim=0)
+                hemi_preds[:, idx, :] += preds
+        else:
+            models = self.models[hemi]
+            for idx, model in enumerate(models):
+                preds = self.forward_batch(model, images)
+                preds = torch.nan_to_num(preds).cpu()
                 hemi_preds[:, idx, :] += preds
 
-            pred[hemi] = (
-                self.corr_sm[hemi].to(self.device) * hemi_preds.to(self.device)
-            ).sum(1)
+        normalized_pred = (self.corr_sm[hemi].cpu() * hemi_preds.cpu()).sum(1)
+
+        return normalized_pred
+
+    def compile_models(self):
+        for hemi in ["lh", "rh"]:
+            for idx, model in enumerate(self.models[hemi]):
+                self.models[hemi][idx] = torch.compile(model)
+
+    def forward(self, images, use_dataloader=True):
+        pred = {
+            "lh": np.zeros((len(images), self.num_voxels)),
+            "rh": np.zeros((len(images), self.num_voxels)),
+        }
+
+        for hemi in ["lh", "rh"]:
+            pred[hemi] = self.forward_hemi(hemi, images, use_dataloader)
 
         return pred
 
-    def forward_region(self, model_path, images):
-        model, args, imgs_dataset = self.load_model_path(
-            model_path,
-            images,
-            self.device,
-        )
+    def preload_models(self):
+        self.models = {}
 
-        imgs_loader = torch.utils.data.DataLoader(
-            imgs_dataset,
-            batch_size=16,
-            num_workers=4,
-            pin_memory=True,
-        )
+        for hemi in ["lh", "rh"]:
+            self.models[hemi] = []
 
-        criterion = None
-        output, _ = evaluate(
-            args, model, criterion, imgs_loader, imgs_dataset, print_freq=10
-        )
+            for model_path in self.model_paths[hemi]:
+                model, _, _ = self.load_model_path(
+                    model_path,
+                    torch.zeros(1, 3, 224, 224),
+                    self.device,
+                )
+                self.models[hemi].append(model)
 
-        return output
+    def forward_batch(self, model, images):
+        if self.lr_backbone is not None:
+            model.lr_backbone = self.lr_backbone
+            for name, param in model.named_parameters():
+                param.requires_grad = False
 
+        imgs = images.to(next(model.parameters()).device, non_blocking=True)
+        outputs = model(imgs)
+        outputs = outputs["pred"]
 
-transform = transforms.Compose(
-    [
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ]
-)
+        return outputs
+
+    def load_roi_labels(self):
+        metadata = np.load(
+            self.neural_data_path / f"metadata_sub-{self.subj:02}.npy",
+            allow_pickle=True,
+        ).item()
+
+        return {"lh": metadata["lh_rois"], "rh": metadata["rh_rois"]}
+
+    def load_parcels(self):
+        parcels = {}
+        for hemi in ["lh", "rh"]:
+            parcels[hemi] = torch.load(
+                self.parcel_dir / f"{hemi}_labels_s{self.subj:02}.pt", weights_only=True
+            )
+
+        return parcels
 
 
 def main():
@@ -335,63 +404,167 @@ def main():
         type=str,
         default="/engram/nklab/algonauts/ethan/whole_brain_encoder/results",
     )
+    argparser.add_argument("--split", type=str, default="test")
+    argparser.add_argument("--target_dir", type=str, default=None)
+    argparser.add_argument("--save_path", type=str, default=None)
+    argparser.add_argument("--exist_skip", type=bool, default=False)
     input_args = argparser.parse_args()
 
-    model = BrainEncoderWrapper(
-        subj=input_args.subj,
-        enc_output_layer=[1, 3, 5, 7],
-        runs=[1, 2],
-        results_dir=input_args.results_dir,
-    )
+    if input_args.split == "folder":
+        assert input_args.target_dir is not None
+        print(f"Running inference on images in {input_args.target_dir}")
 
-    save_dir = (
-        Path(input_args.results_dir)
-        / f"enc_{'_'.join([str(s) for s in model.enc_output_layer])}_run_{'_'.join([str(s) for s in model.runs])}"
-        / f"subj_{input_args.subj:02}"
-    )
+        model = BrainEncoderWrapper(
+            subj=input_args.subj,
+            enc_output_layer=[1, 3, 5, 7],
+            runs=[1, 2],
+        )
 
-    print(f"Saving results to {save_dir}")
+        args = get_default_args()
+        target_dir = Path(input_args.target_dir)
 
-    args = get_default_args()
-    args.subj = input_args.subj
-    args.metaparcel_idx = 0
-    val_dataset = nsd_dataset_avg(args, transform=None, split="test")
-    imgs_data = []
-    for img, _ in val_dataset:
-        imgs_data.append(img)
-    imgs_data = np.stack(imgs_data)
+        if (target_dir / "activations.npy").exists() and input_args.exist_skip:
+            print(f"Activations already exist for {target_dir}, skipping")
+            return
 
-    out = model.forward(imgs_data)
+        imgs_data = []
+        img_paths = []
+        for img_file in sorted(target_dir.glob("*")):
+            if img_file.suffix.lower() not in [".png", ".jpg", ".jpeg"]:
+                continue
+            img_paths.append(img_file)
+            image = Image.open(img_file).convert("RGB")
+            imgs_data.append(image)
+        # imgs_data.append(np.array(image))
+        # print(np.array(image).shape)
+        # imgs_data = np.stack(imgs_data)
+        # print(f"image[0] shape: {np.array(imgs_data[0]).shape}")
 
-    split = "test"
-    save_dir.mkdir(exist_ok=True, parents=True)
-    val_correlation = {}
-    for hemi in ["lh", "rh"]:
-        args.metaparcel_idx = 0
-        args.hemi = hemi
-        val_dataset = nsd_dataset_avg(args, transform=None, split=split)
+        dataset = nsd_dataset_custom(imgs_data, transform=model.transform)
+        batch_size = 16
+        imgs_loader = torch.utils.data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=4,
+            pin_memory=True,
+            shuffle=False,
+        )
 
-        data_idxs = [val_dataset.img_to_runs[i] for i in range(len(val_dataset))]
-        data = [
-            torch.from_numpy(val_dataset.betas[idxs]).mean(axis=0) for idxs in data_idxs
-        ]
-        ys = torch.stack(data)
+        out = {
+            "lh": np.zeros((len(imgs_data), 163842)),
+            "rh": np.zeros((len(imgs_data), 163842)),
+        }
+        for idx, (imgs, _) in tqdm(
+            enumerate(imgs_loader),
+            desc="running forward pass",
+            leave=False,
+            total=len(imgs_loader),
+        ):
+            with torch.no_grad():
+                pred = model.forward(imgs, use_dataloader=False)
 
-        num_valid_voxels = ys.shape[1]
-        val_correlation[hemi] = torch.zeros(num_valid_voxels)
-        for v in range(num_valid_voxels):
-            val_correlation[hemi][v] = corr(ys[:, v].cpu(), out[hemi][:, v].cpu())[0]
+            for hemi in ["lh", "rh"]:
+                out[hemi][idx * batch_size : idx * batch_size + len(imgs)] = (
+                    pred[hemi].cpu().numpy()
+                )
 
-        val_correlation[hemi] = val_correlation[hemi].numpy()
+        parcels = model.load_parcels()
+        roi_labels = model.load_roi_labels()
+        parcel_mean_activity = {}
+        for hemi in ["lh", "rh"]:
+            parcel_mean_activity[hemi] = np.zeros((len(imgs_data), len(parcels[hemi])))
+            for idx, parcel in enumerate(parcels[hemi]):
+                parcel_mask = np.zeros(163842, dtype=bool)
+                parcel_mask[parcel] = True
+                parcel_mean_activity[hemi][:, idx] = out[hemi][:, parcel_mask].mean(
+                    axis=1
+                )
+            la = np.zeros(163842, dtype=bool)
+            for roi in roi_labels[hemi]:
+                la = np.logical_or(la, roi_labels[hemi][roi])
+            out[hemi] = out[hemi][:, la]
 
-        print(f"Validation correlation for {hemi} hemi: {val_correlation[hemi].mean()}")
+        res = {}
+        res["path"] = input_args.target_dir
+        res["out"] = out
+        res["parcel_mean_activity"] = parcel_mean_activity
+        res["img_paths"] = img_paths
+        res["parcels"] = parcels
 
-        with (save_dir / f"{split}_corr_avg.txt").open("a") as f:
-            f.write(
-                f"Validation correlation for {split} split: {val_correlation[hemi].mean()}\n"
+        if input_args.save_path is not None and input_args.save_path:
+            save_path = Path(input_args.save_path)
+        else:
+            save_path = target_dir / "activations.npy"
+        save_path.parent.mkdir(exist_ok=True, parents=True)
+        np.save(save_path, res)
+        print(f"Saved activations to {save_path}")
+
+    if input_args.split in ["train", "val", "test"]:
+        split = input_args.split
+
+        model = BrainEncoderWrapper(
+            subj=input_args.subj,
+            enc_output_layer=[1, 3, 5, 7],
+            runs=[1, 2],
+        )
+
+        save_dir = (
+            Path(input_args.results_dir)
+            / f"enc_{'_'.join([str(s) for s in model.enc_output_layer])}_run_{'_'.join([str(s) for s in model.runs])}"
+            / f"subj_{input_args.subj:02}"
+        )
+
+        print(f"Saving results to {save_dir}")
+
+        args = get_default_args()
+        args.subj = input_args.subj
+        imgs = {}
+        betas = {}
+        for hemi in ["lh", "rh"]:
+            args.hemi = hemi
+            val_dataset = nsd_dataset_avg(args, transform=None, split=input_args.split)
+            val_dataset.backbone_arch = False
+
+            imgs[hemi] = []
+            betas[hemi] = []
+            for img, beta in val_dataset:
+                imgs[hemi].append(img)
+                betas[hemi].append(beta["betas"])
+            imgs[hemi] = np.stack(imgs[hemi])
+            betas[hemi] = np.stack(betas[hemi])
+        imgs = imgs["lh"]
+
+        out = model.forward(imgs_data)
+        for key, t in out.items():
+            out[key] = t.cpu().numpy()
+        res = {}
+        res["out"] = out
+
+        save_dir.mkdir(exist_ok=True, parents=True)
+
+        np.save(save_dir / f"{split}_activations.npy", res)
+
+        val_correlation = {}
+        for hemi in ["lh", "rh"]:
+            ys = torch.from_numpy(betas[hemi])
+
+            num_valid_voxels = ys.shape[1]
+            val_correlation[hemi] = torch.zeros(num_valid_voxels)
+            for v in range(num_valid_voxels):
+                val_correlation[hemi][v] = corr(ys[:, v], out[hemi][:, v])[0]
+
+            val_correlation[hemi] = val_correlation[hemi].numpy()
+
+            print(
+                f"Validation correlation for {hemi} hemi: {val_correlation[hemi].mean()}"
             )
 
-    np.save(save_dir / f"{split}_corr_avg.npy", val_correlation)
+            with (save_dir / f"{split}_corr_avg.txt").open("a") as f:
+                f.write(
+                    f"Validation correlation for {split} split: {val_correlation[hemi].mean()}\n"
+                )
+
+        np.save(save_dir / f"{split}_corr_avg.npy", val_correlation)
 
 
 if __name__ == "__main__":

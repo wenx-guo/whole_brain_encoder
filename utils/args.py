@@ -212,7 +212,7 @@ def get_args_parser():
     parser.add_argument(
         "--axis", default="anterior", choices=["anterior", "posterior"], type=str
     )
-    parser.add_argument("--hemi", default="lh", choices=["lh", "rh"], type=str)
+    parser.add_argument("--hemi", default=None, choices=["lh", "rh", None], type=str)
 
     return parser
 
@@ -245,6 +245,8 @@ def get_model_dir_args(
 def get_model_dir(
     output_path, backbone_arch, encoder_arch, subj, enc_output_layer, run, hemi
 ):
+    if hemi is None:
+        hemi = "both"
     p = (
         Path(output_path)
         / f"nsd_test/{backbone_arch}_{encoder_arch}"

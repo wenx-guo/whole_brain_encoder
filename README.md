@@ -90,3 +90,10 @@ Otherwise, to train a single model, run:
 conda activate xformers
 python main.py --subj $SUBJECT --enc_output_layer $layer --run $RUN_ID --hemi $HEMI
 ```
+
+### To train the model only on the nsd labeled area, with both models on one gpu
+
+```bash
+conda activate xformers
+python main.py --parcel_dir ./parcels/nsd_labels --run $RUN_ID
+```

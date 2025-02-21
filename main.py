@@ -192,12 +192,11 @@ def main(args):
             outputs, targets = evaluate(
                 args,
                 model,
-                criterion,
+                None,
                 dl,
                 train_dataset,
             )
-            num_hemi_voxels = train_dataset.num_hemi_voxels
-            val_correlation = torch.zeros(num_hemi_voxels)
+            val_correlation = torch.zeros(outputs.shape[1])
             for v in torch.where(train_dataset.valid_voxel_mask)[0]:
                 val_correlation[v] = corr(outputs[:, v].cpu(), targets[:, v].cpu())[0]
 
